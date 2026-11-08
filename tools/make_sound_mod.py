@@ -194,7 +194,7 @@ def main():
     channels.add_argument("--mono", action="store_true", help="always mono")
     channels.add_argument("--stereo", action="store_true", help="always stereo")
     ap.add_argument("--mod", default="sounds", help="mod folder in <data>\\mods (default sounds)")
-    ap.add_argument("--name", default="Свои звуки", help="mod name in mod.txt (for a new mod)")
+    ap.add_argument("--name", default="Custom sounds", help="mod name in mod.txt (for a new mod)")
     ap.add_argument("--priority", type=int, default=20)
     args = ap.parse_args()
 

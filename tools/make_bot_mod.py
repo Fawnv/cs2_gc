@@ -28,7 +28,7 @@ from vpk_extract import read_file, read_tree  # noqa: E402
 
 # bot_difficulty: 0 easy, 1 normal, 2 hard, 3 expert; custom_bot_difficulty is the same + 2 (0 none, 1 dumb)
 LEVELS = {"easy": 0, "normal": 1, "hard": 2, "expert": 3}
-LEVEL_NAMES = {0: "лёгкие", 1: "обычные", 2: "сложные", 3: "эксперты"}
+LEVEL_NAMES = {0: "easy", 1: "normal", 2: "hard", 3: "expert"}
 
 
 def server_configs(cs2):
@@ -103,7 +103,7 @@ def main():
             f.write("bot_dont_shoot 0\n")
             f.write(f'echo "CSForge bots: bot_difficulty {level}, custom_bot_difficulty {level + 2} ({mode_of(name)})"\n')
 
-    title = f"Боты: {LEVEL_NAMES[level]}"
+    title = f"Bots: {LEVEL_NAMES[level]}"
     with open(os.path.join(mod_dir, "mod.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("// made by tools\\make_bot_mod.py\n\"mod\"\n{\n")
         f.write(f'\t"name"\t\t"{kv_string(title)}"\n')

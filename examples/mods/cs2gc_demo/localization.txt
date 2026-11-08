@@ -5,7 +5,7 @@
 {
 	"Tokens"
 	{
-		"PaintKit_cs2gc_demo"		"Тестовый скин cs2_gc: раскраска и иконка загружены из мода cs2gc_demo, а не из файлов игры."
-		"PaintKit_cs2gc_demo_Tag"		"cs2_gc: свой скин"
+		"PaintKit_cs2gc_demo"		"cs2_gc test skin: its finish and icon come from the cs2gc_demo mod, not from the game files."
+		"PaintKit_cs2gc_demo_Tag"		"cs2_gc: custom skin"
 	}
 }

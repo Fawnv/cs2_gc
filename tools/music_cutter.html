@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Нарезка трека</title>
+<title>Track cutter</title>
 <style>
   :root {
     --bg: #14161a; --panel: #1c1f25; --line: #2b2f37; --text: #e6e8eb; --muted: #8b919c;
@@ -47,30 +47,30 @@
 </head>
 <body>
 <main>
-  <h1 id="title">Нарезка трека</h1>
+  <h1 id="title">Track cutter</h1>
   <div class="sub" id="sub"></div>
 
   <div class="panel">
     <canvas id="wave"></canvas>
     <div class="transport">
-      <button id="playAll" title="Пробел">▶ Трек</button>
+      <button id="playAll" title="Space">▶ Track</button>
       <button id="stop">■</button>
       <span class="time" id="pos">0:00.0</span>
-      <span class="hint">Клик по волне ставит начало выбранного отрезка и сразу его играет.</span>
+      <span class="hint">Click the waveform to put the selected slot's start there and hear it.</span>
     </div>
   </div>
 
   <div class="panel">
     <table>
-      <thead><tr><th>Отрезок</th><th>Длина</th><th>Начало, с</th><th class="hide-sm">Где в треке</th><th></th></tr></thead>
-      <tbody id="slots"><tr><td colspan="5" class="loading">Загружаю трек…</td></tr></tbody>
+      <thead><tr><th>Slot</th><th>Length</th><th>Start, s</th><th class="hide-sm">Where in the track</th><th></th></tr></thead>
+      <tbody id="slots"><tr><td colspan="5" class="loading">Loading the track…</td></tr></tbody>
     </table>
   </div>
 
   <div class="panel">
     <div class="footer">
-      <button class="primary" id="build">Собрать мод</button>
-      <span class="hint">Отрезки длиннее трека повторяют его по кругу. Длина каждого отрезка — как у заменяемого набора.</span>
+      <button class="primary" id="build">Build the mod</button>
+      <span class="hint">A slot longer than the track loops it. Each slot is as long as in the kit it replaces.</span>
     </div>
     <pre id="log"></pre>
   </div>
@@ -90,9 +90,9 @@ let playing = null; // { sources, startedAt, from, length, wrapTo }
 
 const slots = CONFIG.slots.map((s, i) => ({ ...s, color: COLORS[i % COLORS.length] }));
 selected = Math.max(0, slots.findIndex(s => s.slot === "roundmvpanthem_01"));
-document.getElementById("title").textContent = `Нарезка трека: ${CONFIG.name}`;
+document.getElementById("title").textContent = `Track cutter: ${CONFIG.name}`;
 document.getElementById("sub").textContent =
-  `${CONFIG.track}, ${fmt(CONFIG.seconds)} · заменяет набор ${CONFIG.kit} · ${slots.length} отрезков`;
+  `${CONFIG.track}, ${fmt(CONFIG.seconds)} · replaces the kit ${CONFIG.kit} · ${slots.length} slots`;
 
 function fmt(t) {
   const m = Math.floor(t / 60), s = t - m * 60;
@@ -108,9 +108,9 @@ function buildTable() {
     const whole = s.whole;
     tr.innerHTML = `
       <td><span class="swatch" style="background:${s.color}"></span>${s.label}</td>
-      <td class="len">${s.length.toFixed(1)} с</td>
-      <td>${whole ? '<span class="whole">весь трек</span>' : `<input type="number" step="0.1" min="0" value="${s.start.toFixed(1)}">`}</td>
-      <td class="len hide-sm">${whole ? "" : `${fmt(s.start)} – ${fmt((s.start + s.length) % CONFIG.seconds)}${s.start + s.length > CONFIG.seconds ? " (по кругу)" : ""}`}</td>
+      <td class="len">${s.length.toFixed(1)} s</td>
+      <td>${whole ? '<span class="whole">whole track</span>' : `<input type="number" step="0.1" min="0" value="${s.start.toFixed(1)}">`}</td>
+      <td class="len hide-sm">${whole ? "" : `${fmt(s.start)} – ${fmt((s.start + s.length) % CONFIG.seconds)}${s.start + s.length > CONFIG.seconds ? " (looped)" : ""}`}</td>
       <td><div class="actions"><button data-play>▶</button></div></td>`;
     tr.addEventListener("click", e => {
       if (e.target.closest("input")) return;
@@ -272,7 +272,7 @@ document.addEventListener("keydown", e => {
 document.getElementById("build").addEventListener("click", async () => {
   const button = document.getElementById("build");
   button.disabled = true;
-  logEl.className = ""; logEl.textContent = "Собираю…";
+  logEl.className = ""; logEl.textContent = "Building…";
   const starts = {};
   for (const s of slots) if (!s.whole) starts[s.slot] = s.start;
   try {
@@ -281,7 +281,7 @@ document.getElementById("build").addEventListener("click", async () => {
     logEl.textContent = text;
     logEl.className = text.includes("error") ? "err" : "ok";
   } catch (e) {
-    logEl.textContent = "Не получилось: окно с make_music_mod.py закрыто? " + e;
+    logEl.textContent = "Failed: is the make_music_mod.py window closed? " + e;
     logEl.className = "err";
   }
   button.disabled = false;
@@ -300,7 +300,7 @@ function tick() {
   resize();
   window.addEventListener("resize", resize);
   requestAnimationFrame(tick);
-})().catch(e => { logEl.className = "err"; logEl.textContent = "Не удалось загрузить трек: " + e; });
+})().catch(e => { logEl.className = "err"; logEl.textContent = "Couldn't load the track: " + e; });
 </script>
 </body>
 </html>

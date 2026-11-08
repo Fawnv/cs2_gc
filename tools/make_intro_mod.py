@@ -83,7 +83,7 @@ def main():
             if not os.path.exists(src):
                 sys.exit(f"no {src}")
             shutil.copyfile(src, os.path.join(out_dir, name))
-        title, description = "Заставка: тест (op9_main)", "the intro swapped for the game's op9_main movie"
+        title, description = "Intro: test (op9_main)", "the intro swapped for the game's op9_main movie"
     else:
         for name, src, small in (("intro.webm", args.video, False), ("intro720p.webm", args.video720 or args.video, True)):
             if not os.path.exists(src):
@@ -93,7 +93,7 @@ def main():
                 shutil.copyfile(src, out)
             else:
                 convert(src, out, small)
-        title, description = "Своя заставка", f"the intro from {os.path.basename(args.video)}"
+        title, description = "Custom intro", f"the intro from {os.path.basename(args.video)}"
 
     with open(os.path.join(mod_dir, "mod.txt"), "w", encoding="utf-8", newline="\n") as f:
         f.write("// made by tools\\make_intro_mod.py\n\"mod\"\n{\n")
