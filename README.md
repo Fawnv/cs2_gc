@@ -3,7 +3,7 @@
 > [!WARNING]
 > cs2_gc always runs the game with `-insecure`: VAC is off and official servers won't let you in. It is not affiliated with or endorsed by Valve. Use it at your own risk, ideally on a secondary Steam account.
 
-In Valve games, the Game Coordinator (GC) is the backend service behind inventories, loadouts, cases, stickers and ranks. cs2_gc is a port of [csgo_gc](https://github.com/mikkokko/csgo_gc) to **Counter-Strike 2**: it redirects the game's GC traffic to an implementation that runs inside the game process, so everything works offline and locally. Your inventory lives in `cs2_gc\inventory.txt`.
+In Valve games, the Game Coordinator (GC) is the backend service behind inventories, loadouts, cases, stickers and ranks. cs2_gc is a port of [csgo_gc](https://github.com/mikkokko/csgo_gc) to Counter-Strike 2. It redirects the game's GC traffic to an implementation that runs inside the game process, so everything works offline and locally. Your inventory lives in `cs2_gc\inventory.txt`.
 
 ## Features
 
@@ -23,9 +23,9 @@ In Valve games, the Game Coordinator (GC) is the backend service behind inventor
 
 ## Safety
 
-- The game always starts with `-insecure`: the launcher restarts itself with it if it's missing and refuses `-trusted`. A local server can't become secure either (`BSecureAllowed` returns false, the secure flag is stripped from `InitGameServer`).
-- **Game files are never modified.** cs2_gc only reads the game's DLLs and `pak01_dir.vpk`. Everything it writes (config, inventory, log, mods) stays in its own `cs2_gc\` data folder.
-- CS2 only starts when the launcher sits next to `cs2.exe`, so `run_cs2_gc.cmd` copies `cs2_gc.exe` into `game\bin\win64\` **only while you play** and removes it, along with any crash dumps, when the game exits. `cleanup_cs2_folder.cmd` does the same cleanup on demand and checks that nothing named `cs2_gc*` is left.
+- The game always starts with `-insecure`. The launcher restarts itself with it if it's missing and refuses `-trusted`. A local server can't become secure either (`BSecureAllowed` returns false, the secure flag is stripped from `InitGameServer`).
+- Game files are never modified. cs2_gc only reads the game's DLLs and `pak01_dir.vpk`. Everything it writes (config, inventory, log, mods) stays in its own `cs2_gc\` data folder.
+- CS2 only starts when the launcher sits next to `cs2.exe`, so `run_cs2_gc.cmd` copies `cs2_gc.exe` into `game\bin\win64\` only while you play and removes it, along with any crash dumps, when the game exits. `cleanup_cs2_folder.cmd` does the same cleanup on demand and checks that nothing named `cs2_gc*` is left.
 - Launching CS2 from Steam as usual gives you the normal game with VAC. cs2_gc doesn't hook into it.
 
 ## Installation
@@ -40,17 +40,13 @@ The log is in `release\cs2_gc\gc_log.txt` and in the game console (`[GC]` lines)
 
 ## Inventory editing
 
-### Live editing
-
-While the game is running, open **http://127.0.0.1:13001/** (or `open_editor.cmd`) and press **Connect**.
+While the game is running, open http://127.0.0.1:13001/ (or `open_editor.cmd`) and press *Connect*.
 
 - **Catalogue:** every item of the current game (weapons and their finishes, knives, gloves, stickers, charms, music kits, graffiti, patches), searchable by name, internal name or id. *Add to inventory* puts it straight into the game. `tools/gen_invedit_catalog.py --lang <language>` makes it with the names of another game language.
 - **Edit item:** for an item you have, change its rarity, quality (including the ★ of knives), wear and pattern seed, the StatTrak counter and the name tag.
 - **Mods:** turn CSForge mods on and off and change their load order. Takes effect at the next game start.
 
-Changes are saved to `inventory.txt`. The port can be changed with `"inventory_editor_port"`. Other csgo_gc editors can connect too: set `"inventory_editor_origin"` to the `Origin` they provide.
-
-### Offline editing
+Changes are saved to `inventory.txt`. `"inventory_editor_port"` sets the port. To connect another csgo_gc editor, set `"inventory_editor_origin"` to the `Origin` it provides.
 
 `inventory.txt` has the same format as in csgo_gc, so its offline editors work too. Edit it only while the game is closed, or the GC will overwrite it.
 
@@ -85,11 +81,11 @@ cs2_gc\mods\<mod>\
 ```
 
 - `items_game.txt` sections are appended to the game's schema. Ids the game or an earlier mod already has are skipped (duplicates crash the client), existing entries can't be changed.
-- `localization.txt` tokens are added to every language in `"mod_languages"` (English and Russian by default) and *replace* existing ones, so anything in the game can be renamed.
+- `localization.txt` tokens are added to every language in `"mod_languages"` (English and Russian by default) and replace existing ones, so anything in the game can be renamed.
 - For the same path in `files\`, the mod with the higher `priority` wins. Mods load by priority, then by folder name.
 - `CSForge:` lines in `gc_log.txt` list the mods, conflicts, skipped ids and the built VPK.
 
-Assets are compiled with the free CS2 Workshop Tools (`resourcecompiler`). Use ids above 10100 for paint kits and above 110 for music kits.
+Compile your assets with the free CS2 Workshop Tools (`resourcecompiler`). Use ids above 10100 for paint kits and above 110 for music kits.
 
 ### Mod tools
 
@@ -103,7 +99,7 @@ All of them work without the Workshop Tools. They only read the game folder and 
 | `tools/make_intro_mod.py` | replaces the COUNTER-STRIKE 2 intro video |
 | `tools/make_bot_mod.py` | sets the bot difficulty per game mode (the game has no menu for it) |
 
-Audio in other formats than MP3 is converted with ffmpeg, or with the codecs built into Windows when ffmpeg isn't installed.
+The tools convert other audio formats to MP3 with ffmpeg, or with the codecs built into Windows when ffmpeg isn't installed.
 
 ```bat
 python tools\make_music_mod.py --cs2 "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" --data release\cs2_gc --mp3 track.mp3 --name "My kit" --kit theverkkars_01 --add-item
@@ -115,17 +111,17 @@ python tools\make_bot_mod.py --cs2 "..." --data release\cs2_gc --difficulty expe
 
 With mods on, CSForge also patches the game's own Panorama scripts at every start (`"panorama_fixes" "1"`). The current scripts are read from the game, so a game update can't bring back an old copy, and a fix whose anchor is gone is skipped with a line in the log.
 
-- **A case without a key during a match** used to open a window with no buttons at all, not even Close. Now it opens for viewing only, with Close.
-- **The Upgrader**, see below.
+- A case without a key used to open a window with no buttons at all during a match, not even Close. Now it opens for viewing only, with Close.
+- The upgrader, see below.
 
 ## Upgrader
 
-An *Upgrader* tab in the inventory, and *Upgrade* in a skin's right-click menu. Put up to 10 skins in (knives and gloves too), pick a target, spin the wheel: win the target or lose the skins.
+An *Upgrader* tab in the inventory, and *Upgrade* in a skin's right-click menu. Put up to 10 skins in (knives and gloves too) and pick a target. If the wheel stops in the chance arc you get the target, otherwise the skins are gone.
 
-- **Chance = what the bet is worth / the target's price.** A skin worth 50 for one worth 100 is 50%. The target has to cost more than the bet: targets that are cheaper aren't offered.
-- **Targets are a skin in a given wear** (FN, MW, FT, WW, BS), cheapest first, each with its price and your chance. Filters: rarity, type, same weapon, StatTrak™, and x1.5–x10 multipliers that only show targets at least that many times the bet. The skin you win gets a float within the wear you picked.
-- **Prices** come from [market.csgo.com](https://market.csgo.com)'s public price list (lowest offers, no key needed). It is downloaded at game start when the saved one (`cs2_gc\prices_RUB.json`) is older than 12 hours, and the old one is used when there's no internet. A price depends on the wear, StatTrak™ and souvenir status, like on the market. A skin that isn't on sale in its wear can't go in. Doppler phases and gems share one market name and so one price.
-- Without any price list (`"upgrader_prices" "off"`, or no internet on the first start) the chances go by rarity instead: 1:10 per rarity step.
+- **Chance:** what the bet is worth divided by the target's price. A skin worth 50 for one worth 100 is 50%. The target has to cost more than the bet, so cheaper targets aren't offered.
+- **Targets:** a skin in a given wear (FN, MW, FT, WW, BS), cheapest first, each with its price and your chance. Filters: rarity, type, same weapon, StatTrak™, and x1.5-x10 multipliers that only show targets at least that many times the bet. The skin you win gets a float within the wear you picked.
+- **Prices:** [market.csgo.com](https://market.csgo.com)'s public price list (lowest offers, no key needed). cs2_gc downloads it at game start when the saved one (`cs2_gc\prices_RUB.json`) is older than 12 hours and keeps using the old one when there's no internet. A price depends on the wear, StatTrak™ and souvenir status, like on the market. A skin that isn't on sale in its wear can't go in. Doppler phases and gems share one market name and so one price.
+- **No price list:** with `"upgrader_prices" "off"`, or without internet on the first start, the chances go by rarity, 1:10 per rarity step.
 
 The roll happens in the GC, with the same prices the window shows. The won skin stays hidden until the wheel stops.
 
@@ -137,11 +133,11 @@ Requires Visual Studio 2022 with the C++ workload, which includes CMake and vcpk
 build.cmd
 ```
 
-The first build takes 20–30 minutes while vcpkg builds protobuf, mbedtls and libwebsockets. The result is in `release\`, and rebuilding never overwrites your `config.txt` and `inventory.txt`. `tools/make_release_zip.py` packs a release zip.
+The first build takes 20-30 minutes while vcpkg builds protobuf, mbedtls and libwebsockets. The result is in `release\`, and rebuilding never overwrites your `config.txt` and `inventory.txt`. `tools/make_release_zip.py` packs a release zip.
 
 ### Offline self-test
 
-`cs2_gc_selftest.exe` checks without the game or Steam everything that can be checked that way: reading the VPK and the item schema, opening every case, trade ups, rentals, the store, the editor protocol, CSForge builds, the upgrader and more. It only reads the game folder and writes only to the data folder you give it. Put `items_extra.txt` and `price_sheet.txt` from `examples\` into that folder first.
+`cs2_gc_selftest.exe` runs without the game or Steam and checks reading the VPK and the item schema, opening every case, trade ups, rentals, the store, the editor protocol, CSForge builds, the upgrader and more. It only reads the game folder and writes only to the data folder you give it. Put `items_extra.txt` and `price_sheet.txt` from `examples\` into that folder first.
 
 ```bat
 build\tests\cs2_gc_selftest.exe "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" "%TEMP%\cs2_gc_test"
@@ -197,10 +193,10 @@ Open an issue with what you did, what happened and `gc_log.txt`. If it doesn't l
 
 ## Credits
 
-- **Mikko Kokko** — author of [csgo_gc](https://github.com/mikkokko/csgo_gc) and [csgo_invedit](https://github.com/mikkokko/csgo_invedit)
-- **Theeto** — code reused in csgo_gc from its predecessor project, unusual loot lists
-- **wr4th** — the CS2 port, CSForge, the upgrader
-- [ByMykel/CSGO-API](https://github.com/ByMykel/CSGO-API) — item image links and case data
-- [market.csgo.com](https://market.csgo.com) — the upgrader's prices
+- **Mikko Kokko** - author of [csgo_gc](https://github.com/mikkokko/csgo_gc) and [csgo_invedit](https://github.com/mikkokko/csgo_invedit)
+- **Theeto** - code reused in csgo_gc from its predecessor project, unusual loot lists
+- **wr4th** - the CS2 port, CSForge, the upgrader
+- [ByMykel/CSGO-API](https://github.com/ByMykel/CSGO-API) - item image links and case data
+- [market.csgo.com](https://market.csgo.com) - the upgrader's prices
 
 Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation.

@@ -35,8 +35,8 @@ MODS AND THE UPGRADER
 The CSForge mod loader and the built-in interface fixes (the Upgrader tab in the inventory,
 a Close button for the case window during a match) are turned on in config.txt with "mods" "1".
 Mods go into release\cs2_gc\mods\, README.md explains how to make them.
-The upgrader's chances come from market.csgo.com prices: the list is downloaded at game start
-and kept in release\cs2_gc\prices_RUB.json.
+The upgrader's chances come from market.csgo.com prices. cs2_gc downloads the list at game start
+and keeps it in release\cs2_gc\prices_RUB.json.
 
 IF SOMETHING WENT WRONG
 If the run_cs2_gc.cmd window was closed early or the game crashed, run cleanup_cs2_folder.cmd:
