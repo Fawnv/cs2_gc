@@ -200,3 +200,14 @@ Open an issue with what you did, what happened and `gc_log.txt`. If it doesn't l
 - [market.csgo.com](https://market.csgo.com) - the upgrader's prices
 
 Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation.
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=fawnv%2Fcs2_gc&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
+ </picture>
+</a>
