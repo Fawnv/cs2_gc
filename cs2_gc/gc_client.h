@@ -1,0 +1,116 @@
+#pragma once
+
+#include "gc_const.h"
+#include "gc_shared.h"
+#include "inventory.h"
+#include "match_tracker.h"
+
+class GCMessageRead;
+
+class CMsgClientWelcome;
+class CMsgCStrike15Welcome;
+class CMsgGCCStrike15_v2_MatchmakingGC2ClientHello;
+
+struct AuthTicket
+{
+    uint64_t steamId{}; // gameserver
+    std::vector<uint8_t> buffer;
+};
+
+class ClientGC final : public SharedGC
+{
+public:
+    ClientGC(uint64_t steamId);
+    ~ClientGC();
+
+private:
+    void HandleEvent(GCEvent type, uint64_t id, std::vector<uint8_t> &&buffer) override;
+
+    // event handlers
+    void HandleMessage(uint32_t type, const void *data, uint32_t size);
+    void HandleNetMessage(uint64_t steamId, const void *data, uint32_t size);
+    void SetAuthTicket(uint32_t handle, std::vector<uint8_t> &&buffer);
+    void ClearAuthTicket(uint32_t handle);
+    void RichPresence(uint64_t id, const std::vector<uint8_t> &buffer);
+    void AwardMatchXp(const MatchSummary &match, bool send);
+    void HandleConnect(uint64_t steamId, GCMessageRead &message);
+    void HandleSOCacheRequest();
+    void InventoryUpdate();
+
+    // send to either the local game or the game server we're connected to
+    void SendMessageToGame(bool server, uint32_t type,
+        const google::protobuf::MessageLite &message, uint64_t jobId = JobIdInvalid);
+
+    void SendSOCacheMessages(const SOCacheMessages &messages, bool server);
+    void SendInventoryChangeMessages(const InventoryChangeMessages &messages);
+
+    void OnClientHello(GCMessageRead &messageRead);
+    void OnMatchmakingHello();
+    void OnRequestInventoryRefresh();
+    void AdjustEquipSlots(GCMessageRead &messageRead);
+    void ClientPlayerDecalSign(GCMessageRead &messageRead);
+    void UseItemRequest(GCMessageRead &messageRead);
+    void ClientRequestJoinServerData(GCMessageRead &messageRead);
+    void SetItemPositions(GCMessageRead &messageRead);
+    void IncrementKillCountAttribute(GCMessageRead &messageRead);
+    void ApplySticker(GCMessageRead &messageRead);
+    void RedeemMissionReward(GCMessageRead &messageRead);
+    void RequestPrestigeCoin(GCMessageRead &messageRead);
+    void AckXpShopTracks(GCMessageRead &messageRead);
+    void StoreGetUserData(GCMessageRead &messageRead);
+    void StorePurchaseInit(GCMessageRead &messageRead);
+    void StorePurchaseFinalize(GCMessageRead &messageRead);
+    void StorePurchaseFinalizeStruct(GCMessageRead &messageRead);
+    void OnGetEventFavorites(GCMessageRead &messageRead);
+    void OnPartyRegister(GCMessageRead &messageRead);
+
+    void DeleteItem(GCMessageRead &messageRead);
+    void OpenCrate(GCMessageRead &messageRead);
+    void VolatileItemLoadContents(GCMessageRead &messageRead);
+    void VolatileItemClaimReward(GCMessageRead &messageRead);
+    void RedeemFreeReward(GCMessageRead &messageRead);
+    void MatchEndRunRewardDrops(GCMessageRead &messageRead);
+    void Craft(GCMessageRead &messageRead);
+    void DeleteItemProto(GCMessageRead &messageRead);
+    void UnlockCrate(GCMessageRead &messageRead);
+    void NameItem(GCMessageRead &messageRead);
+    void ModifyItemStringAttr(GCMessageRead &messageRead);
+    void ModifyItemAttribute(GCMessageRead &messageRead);
+    void StatTrakSwap(GCMessageRead &messageRead);
+    void EconPreviewDataBlockRequest(GCMessageRead &messageRead);
+    void NameBaseItem(GCMessageRead &messageRead);
+    void RemoveItemName(GCMessageRead &messageRead);
+
+    void ProcessCasketItemLoadContents(GCMessageRead &messageRead);
+    void ProcessCasketItemAdd(GCMessageRead &messageRead);
+    void ProcessCasketItemExtract(GCMessageRead &messageRead);
+
+    void BuildMatchmakingHello(CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &message);
+    void BuildClientWelcome(CMsgClientWelcome &message, const CMsgCStrike15Welcome &csWelcome,
+        const CMsgGCCStrike15_v2_MatchmakingGC2ClientHello &matchmakingHello);
+    void SendRankUpdate();
+
+    uint32_t AccountId() const { return m_steamId & 0xffffffff; }
+
+    const uint64_t m_steamId;
+
+    Inventory m_inventory;
+
+    uint64_t m_serverSteamId{};
+    std::unordered_map<uint32_t, AuthTicket> m_tickets;
+
+    // microtransactions, we only have one going at a time
+    uint64_t m_transactionId{};
+    std::vector<uint64_t> m_transactionItemIds;
+    uint64_t m_transactionTerminal{}; // a terminal offer being bought, done on finalize
+
+    // match xp: rich presence shows matches on any server; a dedicated server running our GC
+    // also sends its end of match report, then that match is already paid for
+    MatchTracker m_matchTracker;
+    bool m_matchReported{};
+
+    // the upgrader window's request: deposits come one by one, then the go
+    std::vector<uint64_t> m_upgradeDeposits;
+    uint32_t m_upgradeTarget{}; // catalog index + 1
+    uint32_t m_upgradeTime{};
+};

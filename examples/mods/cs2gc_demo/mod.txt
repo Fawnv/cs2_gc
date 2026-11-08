@@ -1,0 +1,14 @@
+// cs2_gc mod description. Everything is optional, the folder name is used if "name" is missing.
+"mod"
+{
+	"name"		"cs2_gc demo"
+	"author"	"cs2_gc"
+	"version"	"1.0"
+	"description"	"A test skin (paint kit 20001 on AK-47 Inheritance's material) and the CS:GO 2012 menu music. tools\make_demo_mod.py fills files\ from your game files."
+
+	// 0 = off
+	"enabled"	"1"
+
+	// load order: higher wins when two mods ship the same file
+	"priority"	"0"
+}

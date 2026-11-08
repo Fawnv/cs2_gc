@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CS2 Inventory</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+<div class="brand">
+<span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 2.5 3.5 7v10L12 21.5 20.5 17V7L12 2.5Zm0 2.3 6 3.2-6 3.2-6-3.2 6-3.2ZM5.5 9.7l5.5 2.9v6.3l-5.5-2.9V9.7Zm7.5 9.2v-6.3l5.5-2.9V16L13 18.9Z"/></svg></span>
+<div class="brand-text"><h1>CS2 Inventory</h1><span class="brand-sub">cs2_gc editor</span></div>
+</div>
+<div class="tabs" role="tablist" aria-label="Workspace">
+<button id="inventory-tab" role="tab" aria-selected="true" aria-controls="inventory-panel">Inventory <span id="count">(0 items)</span></button>
+<button id="catalog-tab" role="tab" aria-selected="false" aria-controls="catalog-panel" tabindex="-1">Catalogue</button>
+<button id="mods-tab" role="tab" aria-selected="false" aria-controls="mods-panel" tabindex="-1">Mods <span id="mods-count"></span></button>
+</div>
+<div class="toolbar">
+<span id="status" role="status" aria-live="polite" data-state="disconnected">Disconnected</span>
+<button id="connect" class="primary">Connect</button>
+<button id="disconnect" disabled>Disconnect</button>
+</div>
+</header>
+<main>
+<p id="message" role="alert"></p>
+<div class="loading-feedback" aria-label="Loading status">
+<span id="catalog-status" role="status" aria-live="polite">Loading catalogue...</span>
+<button id="catalog-retry" hidden>Retry catalogue loading</button>
+<span id="icon-status" role="status">Loading icons...</span>
+<button id="icon-retry" hidden>Retry icon loading</button>
+</div>
+<div class="workspace" id="workspace">
+<section id="inventory-panel" role="tabpanel" aria-labelledby="inventory-tab">
+<div class="filters">
+<label>Search inventory<input id="inventory-search" type="search" placeholder="Search items&hellip;"></label>
+<label>Category<select id="inventory-category"><option value="">All categories</option></select></label>
+</div>
+<p id="inventory-count" role="status" aria-live="polite"></p>
+<p id="empty">Connect to receive inventory.</p>
+<div id="items" class="grid-viewport" role="list" aria-label="Inventory items"></div>
+</section>
+<section id="catalog-panel" role="tabpanel" aria-labelledby="catalog-tab" hidden>
+<fieldset id="catalog-controls" disabled>
+<legend class="sr-only">Browse templates</legend>
+<div class="filters">
+<label>Search catalogue<input id="catalog-search" type="search" placeholder="Search items&hellip;"></label>
+<label>Category<select id="catalog-category"><option value="">All categories</option></select></label>
+<label>View<select id="catalog-view"><option value="variants">Variants</option><option value="definitions">Definitions</option></select></label>
+</div>
+<div id="advanced-label" hidden>
+<label><input id="catalog-all" type="checkbox"> Show hidden and special items</label>
+</div>
+<p id="catalog-count" role="status" aria-live="polite"></p>
+<div id="catalog-results" class="grid-viewport" role="list" aria-label="Catalogue items"></div>
+</fieldset>
+</section>
+<section id="mods-panel" role="tabpanel" aria-labelledby="mods-tab" hidden>
+<div class="mods-head">
+<p id="mods-status" role="status" aria-live="polite">Connect to see the mods.</p>
+<button id="mods-refresh" disabled>Refresh</button>
+</div>
+<p id="mods-message" role="status" aria-live="polite"></p>
+<div id="mods-list" role="list" aria-label="Mods"></div>
+<p class="mods-note">CSForge packs the enabled mods from cs2_gc\mods when the game starts, lowest priority first: for a file two mods both have, the higher priority wins. Changes here are saved to the mod's mod.txt and apply at the next game start.</p>
+</section>
+<aside id="inspector" aria-label="Item inspector">
+<button id="inspector-close" hidden aria-label="Close item inspector">Close</button>
+<p id="inspector-empty">Select an item to see its details.</p>
+<section id="selection" hidden aria-labelledby="selection-name">
+<img id="selection-icon" class="selection-thumbnail" width="280" height="210" alt="" decoding="async">
+<h2 id="selection-name"></h2>
+<p id="selection-badges"></p>
+<dl id="selection-info"></dl>
+<fieldset id="edit-controls" hidden>
+<legend class="edit-title">Edit item</legend>
+<div class="edit-row">
+<label>Rarity<select id="edit-rarity"></select></label>
+<label>Quality<select id="edit-quality"></select></label>
+</div>
+<div id="edit-paint" class="edit-row" hidden>
+<label>Wear<input id="edit-wear" type="text" inputmode="decimal" autocomplete="off" spellcheck="false"></label>
+<label>Paint seed<input id="edit-seed" type="number" min="0" max="1000" step="1"></label>
+</div>
+<label class="switch-row"><input id="edit-stattrak" type="checkbox"> StatTrak</label>
+<label id="edit-counter-label">StatTrak counter<input id="edit-counter" type="number" min="0" max="4294967295" step="1"></label>
+<label>Name tag<input id="edit-name" type="text" maxlength="40" placeholder="No name tag" autocomplete="off"></label>
+<p id="edit-status" role="status" aria-live="polite"></p>
+<button id="save" class="primary" disabled>Save changes</button>
+</fieldset>
+<fieldset id="creation-controls" hidden>
+<legend class="sr-only">Creation parameters</legend>
+<div id="paint-controls" hidden>
+<label for="wear">Wear</label>
+<input id="wear" type="text" inputmode="decimal" min="0" max="1" autocomplete="off" spellcheck="false">
+<input id="wear-slider" type="range" step="0.0001" min="0" max="1" aria-label="Wear slider">
+<label>Paint seed<input id="seed" type="number" min="0" max="1000" step="1" value="0"></label>
+</div>
+<label id="stattrak-label" hidden><input id="stattrak" type="checkbox"> StatTrak</label>
+<label id="counter-label" hidden>Starting counter<input id="counter" type="number" min="0" max="4294967295" step="1" value="0"></label>
+</fieldset>
+<p id="selection-reason"></p>
+<button id="create" disabled>Add to inventory</button>
+<button id="delete" hidden disabled>Delete item</button>
+</section>
+</aside>
+</div>
+<div class="creation-feedback">
+<p id="creation-status" role="status" aria-live="polite"></p>
+<p id="deletion-status" role="status" aria-live="polite"></p>
+<button id="view-created" hidden>View in inventory</button>
+</div>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

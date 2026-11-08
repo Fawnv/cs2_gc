@@ -1,0 +1,80 @@
+#pragma once
+
+#include <assert.h>
+
+#include <algorithm>
+#include <array>
+#include <charconv>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <format>
+#include <iterator>
+#include <list>
+#include <map>
+#include <optional>
+#include <random>
+#include <string>
+#include <thread>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <variant>
+#include <vector>
+
+template<typename Enum>
+    requires std::is_enum_v<Enum>
+[[nodiscard]] constexpr std::underlying_type_t<Enum> FromEnum(Enum value) noexcept
+{
+    return static_cast<std::underlying_type_t<Enum>>(value);
+}
+
+template<typename Enum>
+    requires std::is_enum_v<Enum>
+[[nodiscard]] constexpr Enum ToEnum(std::underlying_type_t<Enum> value) noexcept
+{
+    return static_cast<Enum>(value);
+}
+
+// the struct name should make it obvious what it does
+template<class... T>
+struct Bruh : T...
+{
+    using T::operator()...;
+};
+
+class NonCopyable
+{
+public:
+    NonCopyable() = default;
+
+    NonCopyable(const NonCopyable &) = delete;
+    NonCopyable(NonCopyable &&) = delete;
+
+    NonCopyable &operator=(const NonCopyable &) = delete;
+    NonCopyable &operator=(NonCopyable &&) = delete;
+};
+
+struct StringHash
+{
+    using is_transparent = void;
+
+    size_t operator()(std::string_view s) const noexcept
+    {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
+template<typename T>
+using StringMap = std::unordered_map<std::string, T, StringHash, std::equal_to<>>;
+
+#include "base_gcmessages.pb.h"
+#include "cstrike15_gcmessages.pb.h"
+#include "econ_gcmessages.pb.h"
+#include "engine_gcmessages.pb.h"
+#include "gcsdk_gcmessages.pb.h"
+#include "gcsystemmsgs.pb.h"
+#include "steammessages.pb.h"
+
+// used in many files for logging
+#include "platform.h"

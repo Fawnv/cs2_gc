@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Нарезка трека</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f25; --line: #2b2f37; --text: #e6e8eb; --muted: #8b919c;
+    --accent: #f0a32a; --accent-dim: rgba(240, 163, 42, 0.18); --wave: #59606d; --wave-hi: #c9cdd3;
+    --region: rgba(120, 160, 255, 0.10); --play: #4cc38a; --danger: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 20px; margin: 0 0 4px; font-weight: 600; }
+  .sub { color: var(--muted); margin-bottom: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  #wave { width: 100%; height: 150px; display: block; cursor: crosshair; border-radius: 6px; background: #101216; }
+  .transport { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  button { background: #2a2e36; color: var(--text); border: 1px solid #3a3f49; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { background: #333842; }
+  button.primary { background: var(--accent); color: #1b1407; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: default; }
+  .time { font-variant-numeric: tabular-nums; min-width: 120px; }
+  .hint { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr.slot { cursor: pointer; }
+  tr.slot:hover td { background: #22262d; }
+  tr.slot.selected td { background: var(--accent-dim); }
+  tr.slot.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: -1px; }
+  .len { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  input[type=number] { width: 90px; background: #12141a; color: var(--text); border: 1px solid #3a3f49; border-radius: 6px; padding: 4px 6px; font: inherit; }
+  .whole { color: var(--muted); }
+  .actions { display: flex; gap: 6px; }
+  .footer { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  pre { margin: 10px 0 0; white-space: pre-wrap; color: var(--muted); font: 12px/1.5 Consolas, monospace; }
+  pre.ok { color: var(--play); }
+  pre.err { color: var(--danger); }
+  .loading { color: var(--muted); padding: 40px; text-align: center; }
+  @media (max-width: 700px) { .hide-sm { display: none; } input[type=number] { width: 70px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1 id="title">Нарезка трека</h1>
+  <div class="sub" id="sub"></div>
+
+  <div class="panel">
+    <canvas id="wave"></canvas>
+    <div class="transport">
+      <button id="playAll" title="Пробел">▶ Трек</button>
+      <button id="stop">■</button>
+      <span class="time" id="pos">0:00.0</span>
+      <span class="hint">Клик по волне ставит начало выбранного отрезка и сразу его играет.</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>Отрезок</th><th>Длина</th><th>Начало, с</th><th class="hide-sm">Где в треке</th><th></th></tr></thead>
+      <tbody id="slots"><tr><td colspan="5" class="loading">Загружаю трек…</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="footer">
+      <button class="primary" id="build">Собрать мод</button>
+      <span class="hint">Отрезки длиннее трека повторяют его по кругу. Длина каждого отрезка — как у заменяемого набора.</span>
+    </div>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+const CONFIG = /*CONFIG*/null;
+const COLORS = ["#7aa2ff", "#f0a32a", "#4cc38a", "#e5534b", "#c38df0", "#47c8d6", "#e6c84c", "#f07ab8",
+                "#8bd45f", "#ff8f5c", "#6fa8ff", "#d9a066", "#9fe0c0", "#b0b8ff", "#ffb3a7", "#a0d468", "#ffd166"];
+
+const wave = document.getElementById("wave");
+const ctx2d = wave.getContext("2d");
+const posEl = document.getElementById("pos");
+const logEl = document.getElementById("log");
+let audio = null, buffer = null, peaks = [], selected = 0;
+let playing = null; // { sources, startedAt, from, length, wrapTo }
+
+const slots = CONFIG.slots.map((s, i) => ({ ...s, color: COLORS[i % COLORS.length] }));
+selected = Math.max(0, slots.findIndex(s => s.slot === "roundmvpanthem_01"));
+document.getElementById("title").textContent = `Нарезка трека: ${CONFIG.name}`;
+document.getElementById("sub").textContent =
+  `${CONFIG.track}, ${fmt(CONFIG.seconds)} · заменяет набор ${CONFIG.kit} · ${slots.length} отрезков`;
+
+function fmt(t) {
+  const m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
+function buildTable() {
+  const body = document.getElementById("slots");
+  body.innerHTML = "";
+  slots.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    tr.className = "slot" + (i === selected ? " selected" : "");
+    const whole = s.whole;
+    tr.innerHTML = `
+      <td><span class="swatch" style="background:${s.color}"></span>${s.label}</td>
+      <td class="len">${s.length.toFixed(1)} с</td>
+      <td>${whole ? '<span class="whole">весь трек</span>' : `<input type="number" step="0.1" min="0" value="${s.start.toFixed(1)}">`}</td>
+      <td class="len hide-sm">${whole ? "" : `${fmt(s.start)} – ${fmt((s.start + s.length) % CONFIG.seconds)}${s.start + s.length > CONFIG.seconds ? " (по кругу)" : ""}`}</td>
+      <td><div class="actions"><button data-play>▶</button></div></td>`;
+    tr.addEventListener("click", e => {
+      if (e.target.closest("input")) return;
+      select(i);
+      if (e.target.closest("[data-play]")) playSlot(i);
+    });
+    const input = tr.querySelector("input");
+    if (input) {
+      input.addEventListener("focus", () => select(i, false));
+      input.addEventListener("change", () => {
+        s.start = clampStart(parseFloat(input.value) || 0);
+        buildTable(); draw();
+      });
+    }
+    body.appendChild(tr);
+  });
+}
+
+function select(i, rebuild = true) {
+  selected = i;
+  if (rebuild) buildTable();
+  else document.querySelectorAll("tr.slot").forEach((tr, k) => tr.classList.toggle("selected", k === i));
+  draw();
+}
+
+function clampStart(t) {
+  return Math.min(Math.max(0, t), Math.max(0, CONFIG.seconds - 0.05));
+}
+
+function resize() {
+  const ratio = window.devicePixelRatio || 1;
+  wave.width = Math.round(wave.clientWidth * ratio);
+  wave.height = Math.round(wave.clientHeight * ratio);
+  computePeaks();
+  draw();
+}
+
+function computePeaks() {
+  peaks = [];
+  if (!buffer) return;
+  const columns = wave.width;
+  const data = buffer.getChannelData(0);
+  const other = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : data;
+  const step = Math.max(1, Math.floor(data.length / columns));
+  for (let x = 0; x < columns; x++) {
+    let max = 0;
+    const end = Math.min(data.length, (x + 1) * step);
+    for (let i = x * step; i < end; i += 8) {
+      const v = Math.max(Math.abs(data[i]), Math.abs(other[i]));
+      if (v > max) max = v;
+    }
+    peaks.push(max);
+  }
+}
+
+// [from, to) pieces of a region on the track timeline, wrapping around the end
+function pieces(start, length) {
+  const total = CONFIG.seconds;
+  if (length >= total) return [[0, total]];
+  const end = start + length;
+  return end <= total ? [[start, end]] : [[start, total], [0, end - total]];
+}
+
+function draw() {
+  const w = wave.width, h = wave.height, total = CONFIG.seconds;
+  const x = t => t / total * w;
+  ctx2d.clearRect(0, 0, w, h);
+
+  const s = slots[selected];
+  if (s) {
+    for (const [a, b] of pieces(s.whole ? 0 : s.start, s.length)) {
+      ctx2d.fillStyle = s.color + "33";
+      ctx2d.fillRect(x(a), 0, x(b) - x(a), h);
+      ctx2d.fillStyle = s.color;
+      ctx2d.fillRect(x(a), 0, Math.max(2, (window.devicePixelRatio || 1) * 2), h);
+    }
+  }
+
+  const mid = h / 2;
+  const style = getComputedStyle(document.documentElement);
+  const waveColor = style.getPropertyValue("--wave"), waveHi = style.getPropertyValue("--wave-hi");
+  const regions = s ? pieces(s.whole ? 0 : s.start, s.length) : [];
+  for (let i = 0; i < peaks.length; i++) {
+    const t = i / peaks.length * total;
+    const inside = regions.some(([a, b]) => t >= a && t < b);
+    ctx2d.fillStyle = inside ? waveHi : waveColor;
+    const amp = Math.max(1, peaks[i] * (h * 0.46));
+    ctx2d.fillRect(i, mid - amp, 1, amp * 2);
+  }
+
+  // the other slots' starts as small ticks at the bottom
+  slots.forEach((o, i) => {
+    if (i === selected || o.whole) return;
+    ctx2d.fillStyle = o.color;
+    ctx2d.fillRect(x(o.start), h - 10 * (window.devicePixelRatio || 1), (window.devicePixelRatio || 1) * 2, 10 * (window.devicePixelRatio || 1));
+  });
+
+  if (playing) {
+    const t = playhead();
+    ctx2d.fillStyle = "#ffffff";
+    ctx2d.fillRect(x(t), 0, Math.max(1, (window.devicePixelRatio || 1)), h);
+  }
+}
+
+function playhead() {
+  if (!playing) return 0;
+  const elapsed = audio.currentTime - playing.startedAt;
+  return (playing.from + elapsed) % CONFIG.seconds;
+}
+
+function stop() {
+  if (playing) for (const src of playing.sources) { try { src.stop(); } catch (e) {} }
+  playing = null;
+  draw();
+}
+
+// plays [from, from+length) like the game will hear it: wrapping around the end of the track
+function play(from, length) {
+  stop();
+  if (!buffer) return;
+  const total = buffer.duration;
+  const sources = [];
+  let when = audio.currentTime + 0.03, at = from % total, left = length;
+  const startedAt = when;
+  while (left > 0.01) {
+    const chunk = Math.min(left, total - at);
+    const src = audio.createBufferSource();
+    src.buffer = buffer;
+    src.connect(audio.destination);
+    src.start(when, at, chunk);
+    sources.push(src);
+    when += chunk; left -= chunk; at = 0;
+  }
+  sources[sources.length - 1].onended = () => { if (playing && playing.sources === sources) { playing = null; draw(); } };
+  playing = { sources, startedAt, from, length };
+}
+
+function playSlot(i) {
+  const s = slots[i];
+  play(s.whole ? 0 : s.start, s.whole ? CONFIG.seconds : s.length);
+}
+
+wave.addEventListener("click", e => {
+  const rect = wave.getBoundingClientRect();
+  const t = clampStart((e.clientX - rect.left) / rect.width * CONFIG.seconds);
+  const s = slots[selected];
+  if (!s || s.whole) { play(t, CONFIG.seconds - t); return; }
+  s.start = Math.round(t * 10) / 10;
+  buildTable();
+  playSlot(selected);
+});
+
+document.getElementById("playAll").addEventListener("click", () => play(playing ? playhead() : 0, CONFIG.seconds));
+document.getElementById("stop").addEventListener("click", stop);
+document.addEventListener("keydown", e => {
+  if (e.code === "Space" && !e.target.closest("input")) { e.preventDefault(); playing ? stop() : playSlot(selected); }
+});
+
+document.getElementById("build").addEventListener("click", async () => {
+  const button = document.getElementById("build");
+  button.disabled = true;
+  logEl.className = ""; logEl.textContent = "Собираю…";
+  const starts = {};
+  for (const s of slots) if (!s.whole) starts[s.slot] = s.start;
+  try {
+    const response = await fetch("/build", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ starts }) });
+    const text = await response.text();
+    logEl.textContent = text;
+    logEl.className = text.includes("error") ? "err" : "ok";
+  } catch (e) {
+    logEl.textContent = "Не получилось: окно с make_music_mod.py закрыто? " + e;
+    logEl.className = "err";
+  }
+  button.disabled = false;
+});
+
+function tick() {
+  if (playing) { posEl.textContent = fmt(playhead()); draw(); }
+  requestAnimationFrame(tick);
+}
+
+(async () => {
+  buildTable();
+  audio = new (window.AudioContext || window.webkitAudioContext)();
+  const data = await (await fetch("/track.mp3")).arrayBuffer();
+  buffer = await audio.decodeAudioData(data);
+  resize();
+  window.addEventListener("resize", resize);
+  requestAnimationFrame(tick);
+})().catch(e => { logEl.className = "err"; logEl.textContent = "Не удалось загрузить трек: " + e; });
+</script>
+</body>
+</html>

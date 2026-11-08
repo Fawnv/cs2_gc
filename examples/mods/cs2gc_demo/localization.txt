@@ -1,0 +1,11 @@
+// cs2_gc mod: tokens added to resource/csgo_<lang>.txt for every language in "mod_languages"
+// (config, default "english russian"). Existing tokens get replaced, so this also renames things.
+// localization_<lang>.txt next to this file applies to that one language only.
+"lang"
+{
+	"Tokens"
+	{
+		"PaintKit_cs2gc_demo"		"Тестовый скин cs2_gc: раскраска и иконка загружены из мода cs2gc_demo, а не из файлов игры."
+		"PaintKit_cs2gc_demo_Tag"		"cs2_gc: свой скин"
+	}
+}

@@ -1,0 +1,94 @@
+// cs2_gc config. Lives in <cs2_gc.exe folder>\cs2_gc\config.txt
+
+"ranks"
+{
+	// competitive and wingman: 1..18 (silver 1 .. global elite)
+	"competitive_rank"	"18"
+	"competitive_wins"	"666"
+	"wingman_rank"	"18"
+	"wingman_wins"	"777"
+
+	// premier: CS Rating number
+	"premier_rating"	"15000"
+	"premier_wins"	"100"
+}
+
+"vac_banned"	"0"
+"cmd_friendly"	"666"
+"cmd_teaching"	"777"
+"cmd_leader"	"888"
+// level (1-40) and xp (0-4999) of a new inventory; after that they live in inventory.txt
+// ("account" block) and grow with xp from matches and terminals
+"player_level"	"39"
+"player_cur_xp"	"4999"
+
+"country"	"FI"
+"currency"	"2"
+
+// these are the same weights valve uses
+"rarity_weights"
+{
+	"1"	"10000000"
+	"2"	"2000000"
+	"3"	"400000"
+	"4"	"80000"
+	"5"	"16000"
+	"6"	"3200"
+	"99"	"1280"
+}
+
+// remove keys, cases, stickers, charms etc. after they've been used
+"destroy_used_items"	"1"
+
+// charm removals ("Remove charm" on a weapon) a new inventory starts with; the count is kept in
+// inventory.txt ("account") after that, and a Remove Keychain Tool Pack from the store adds 3
+"keychain_remove_charges"	"10"
+
+// xp for matches with bots and on community servers: cs2_gc follows the rich presence the game
+// sends to Steam (mode, map, score) through a SteamFriends017 proxy. 0 = off, the proxy isn't
+// installed at all (try this if the game crashes at startup after a Steam update)
+"match_xp"	"1"
+
+// the upgrader's chances by market prices: what the bet is worth / the target's price. The list is
+// market.csgo.com's (https://market.csgo.com/api/v2/prices/RUB.json, no key), saved as
+// cs2_gc\prices_<currency>.json and downloaded again at game start when older than the hours.
+// RUB, USD or EUR; "off" = the old rule, 1:10 per rarity step
+"upgrader_prices"	"RUB"
+"upgrader_prices_hours"	"12"
+
+// only show servers with the "cs2_gc" tag in the server browser
+"show_csgo_gc_servers_only"	"1"
+
+// 0 = don't log anything
+// 1 = log to in-game console
+// 2 = log to in-game console and file (cs2_gc\gc_log.txt)
+"log_output"	"2"
+
+// leave empty to read scripts/items/items_game.txt straight out of
+// game\csgo\pak01_dir.vpk (read only). Set to a full path to use a loose file instead.
+"item_schema_path"	""
+
+// inventory editor: open http://127.0.0.1:13001/ in a browser while the game runs
+// (the page with the CS2 catalogue is served from cs2_gc\editor). 0 = off
+"inventory_editor"	"1"
+
+// port of the editor page and its websocket (change it to run a second cs2_gc, e.g. the self-test's
+// --serve, while a game holds 13001)
+"inventory_editor_port"	"13001"
+
+// additionally allow an external editor page with this Origin to connect to
+// ws://127.0.0.1:13001 (the hosted csgo_invedit only has the CS:GO catalogue)
+"inventory_editor_origin"	"https://mikkokko.github.io"
+
+// CSForge (mod loader): every enabled mod in cs2_gc\mods\<mod> (mod.txt, items_game.txt, localization.txt,
+// files\) gets built into cs2_gc\mods\_build\csforge_dir.vpk and loaded in front of the game's
+// files. The CS2 folder isn't touched. See README, "CSForge". 0 = off
+"mods"	"0"
+
+// with "mods" on, CSForge also fixes the game's own Panorama scripts: right now a container with no
+// key to buy (opened during a match) gets a Close button instead of a popup that can't be closed.
+// The fix goes into the current script at every start. 0 = off
+"panorama_fixes"	"1"
+
+// languages whose resource/csgo_<lang>.txt the mods' localization.txt gets merged into
+"mod_languages"	"english russian"

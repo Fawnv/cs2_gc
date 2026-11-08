@@ -1,0 +1,10 @@
+{
+  "name": "cs2-gc",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "libwebsockets",
+    "mbedtls",
+    "protobuf"
+  ],
+  "builtin-baseline": "aa2d37682e3318d93aef87efa7b0e88e81cd3d59"
+}

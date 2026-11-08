@@ -1,0 +1,26 @@
+// cs2_gc mod: sections merged into the game's scripts/items/items_game.txt (config "mods" "1").
+// New entries are appended to the game's sections. Ids the game (or a mod loaded earlier) already
+// has are skipped and logged in gc_log.txt: duplicates crash the client. Use free ids
+// (paint kits go up to ~10100, music kits to ~110).
+"items_game"
+{
+	"paint_kits"
+	{
+		// demo: a new paint kit whose composite material lives in this mod's files\
+		// (tools\make_demo_mod.py copies AK-47 | Inheritance's there as cs2gc_demo)
+		"20001"
+		{
+			"name"		"cs2gc_demo"
+			"description_string"		"#PaintKit_cs2gc_demo"
+			"description_tag"		"#PaintKit_cs2gc_demo_Tag"
+			"style"		"9"
+			"wear_remap_min"		"0.000000"
+			"wear_remap_max"		"1.000000"
+			"composite_material_path"		"weapons/paints/cs2gc/cs2gc_demo.vcompmat"
+		}
+	}
+	"paint_kits_rarity"
+	{
+		"cs2gc_demo"		"ancient"
+	}
+}
