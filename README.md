@@ -157,7 +157,9 @@ Requires Visual Studio 2022 with the C++ workload, which includes CMake and vcpk
 build.cmd
 ```
 
-The first build takes 20-30 minutes while vcpkg builds protobuf, mbedtls and libwebsockets. The result is in `release\`, and rebuilding never overwrites your `config.txt` and `inventory.txt`. `tools/make_release_zip.py` packs a release zip.
+The first build takes 20-30 minutes while vcpkg builds protobuf, mbedtls and libwebsockets. The result is in `release\`, and rebuilding never overwrites your `config.txt` and `inventory.txt`.
+
+`python tools\make_release_zip.py --exe release\cs2_gc.exe` packs a release zip for GitHub Releases: only `cs2_gc.exe` comes from the build, the rest from this tree (clean example `config.txt` and `inventory.txt`, the scripts, the editor page, the built-in upgrader mod, `README.txt`), in the `release\cs2_gc.exe` + `release\cs2_gc\...` layout the scripts expect. The zip goes to `dist\` as `cs2_gc-<date>-<commit>.zip` (`--out`, `--name` and `--source` change that).
 
 ### Offline self-test
 
