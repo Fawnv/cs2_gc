@@ -1,0 +1,2 @@
+var InventoryPanel;
+(function (InventoryPanel) {

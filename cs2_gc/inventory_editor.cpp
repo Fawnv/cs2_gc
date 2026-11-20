@@ -10,8 +10,9 @@
 
 constexpr uint32_t ProtocolVersion = 1;
 
-// FIXME: is 4096 fair??+
-constexpr size_t RxBufferSize = 4096;
+// one read off the socket: the editor's own messages are small, a mod being installed comes in
+// pieces of 256 KB
+constexpr size_t RxBufferSize = 64 * 1024;
 
 enum CmdType : uint32_t
 {
@@ -31,14 +32,45 @@ enum CmdType : uint32_t
     CmdModList, // gc -> editor: uint32 flags (1 "mods" on in config, 2 loaded this run), string message,
                 // uint32 count, per mod: string folder, name, author, version, description, uint32 enabled,
                 // int32 priority, uint32 files, uint32 flags (1 items, 2 localization, 4 changed since start),
-                // uint32 lost files, uint32 listed, per listed: string path, string winning mod folder
-    CmdModSet // editor -> gc: string folder, uint32 enabled, int32 priority; answered with CmdModList
+                // uint32 lost files, uint32 listed, per listed: string path, string winning mod folder,
+                // then the build's problems with the mod: uint32 count, uint32 listed, per listed: uint32
+                // error (0 = a warning), string text. After the mods the problems of no mod: uint32 listed,
+                // per listed the same
+    CmdModSet, // editor -> gc: string folder, uint32 enabled, int32 priority; answered with CmdModList
+
+    // installing a mod: the page unpacks the archive and sends its files in pieces. Begin and File
+    // are only answered when they fail (CmdModList whose message starts with "Can't"), End always is
+    CmdModInstallBegin, // editor -> gc: string folder
+    CmdModInstallFile, // editor -> gc: string path in the mod, uint32 first piece of the file, uint32 size, bytes
+    CmdModInstallEnd, // editor -> gc: uint32 commit (0 gives up)
+    CmdModDelete // editor -> gc: string folder, moved to mods\_trash; answered with CmdModList
 };
+
+// an install the gc has already said no to: the page may still be sending pieces
+static bool s_installRefused;
+
+// bytes taken off the editor's socket, to tell when GetChanges can stop reading
+static size_t s_receivedBytes;
 
 static void WriteString(MessageWrite &message, std::string_view text)
 {
     message.WriteUint32(static_cast<uint32_t>(text.size()));
     message.WriteData(text.data(), static_cast<uint32_t>(text.size()));
+}
+
+// the first few problems of a mod (or of CSForge), a mod with every id taken has hundreds
+static void WriteProblems(MessageWrite &message, const std::vector<ModLoader::ModProblem> &problems)
+{
+    constexpr size_t MaxListed = 30;
+    constexpr size_t MaxText = 600;
+
+    size_t listed = (std::min)(problems.size(), MaxListed);
+    message.WriteUint32(static_cast<uint32_t>(listed));
+    for (size_t i = 0; i < listed; i++)
+    {
+        message.WriteUint32(problems[i].error ? 1 : 0);
+        WriteString(message, std::string_view{ problems[i].text }.substr(0, MaxText));
+    }
 }
 
 static std::string ReadString(MessageRead &message)
@@ -193,6 +225,7 @@ InventoryEditor::InventoryEditor(ItemSchema &itemSchema)
     info.protocols = protocols;
     info.mounts = &mount;
     info.user = this;
+    info.pt_serv_buf_size = static_cast<unsigned int>(RxBufferSize); // what one read takes off the socket
 
     m_context = lws_create_context(&info);
     if (!m_context)
@@ -219,7 +252,17 @@ bool InventoryEditor::GetChanges(EditorChanges &changes)
         return false;
     }
 
-    lws_service(m_context, -1);
+    // one call takes one read off the socket: go on while messages keep coming (the pieces of a mod
+    // being installed), a little at a time so the gc's own work isn't held up
+    for (int i = 0; i < 64; i++)
+    {
+        size_t before = s_receivedBytes;
+        lws_service(m_context, -1);
+        if (s_receivedBytes == before)
+        {
+            break;
+        }
+    }
 
     if (m_inbox.empty())
     {
@@ -317,6 +360,82 @@ bool InventoryEditor::ParseMessage(const Message &message, EditorChanges &change
             break;
         }
 
+        case CmdModInstallBegin:
+        {
+            std::string folder = ReadString(read);
+            if (!read.IsValid())
+            {
+                break;
+            }
+
+            std::string error;
+            s_installRefused = !ModLoader::InstallBegin(folder, error);
+            if (s_installRefused)
+            {
+                QueueModList("Can't install: " + error);
+            }
+            break;
+        }
+
+        case CmdModInstallFile:
+        {
+            std::string path = ReadString(read);
+            bool first = read.ReadUint32() != 0;
+            uint32_t size = read.ReadUint32();
+            const void *data = read.IsValid() ? read.ReadData(size) : nullptr;
+            if (!read.IsValid() || !data)
+            {
+                break;
+            }
+
+            std::string error;
+            if (!s_installRefused && !ModLoader::InstallWrite(path, first, data, size, error))
+            {
+                std::string summary, ignored;
+                ModLoader::InstallEnd(false, summary, ignored);
+                s_installRefused = true;
+                QueueModList("Can't install: " + error);
+            }
+            break;
+        }
+
+        case CmdModInstallEnd:
+        {
+            bool commit = read.ReadUint32() != 0;
+            if (!read.IsValid())
+            {
+                break;
+            }
+
+            std::string summary, error;
+            bool installed = !s_installRefused && ModLoader::InstallEnd(commit, summary, error);
+            if (installed)
+            {
+                QueueModList("Installed " + summary + ". Restart the game to load it.");
+            }
+            else if (!s_installRefused && commit)
+            {
+                QueueModList("Can't install: " + error);
+            }
+            s_installRefused = false;
+            break;
+        }
+
+        case CmdModDelete:
+        {
+            std::string folder = ReadString(read);
+            if (!read.IsValid())
+            {
+                break;
+            }
+
+            std::string error;
+            QueueModList(ModLoader::DeleteMod(folder, error)
+                    ? "Deleted " + folder + ": the folder is in cs2_gc\\mods\\_trash now. Restart the game to apply."
+                    : "Can't delete " + folder + ": " + error);
+            break;
+        }
+
         default:
             Platform::Print("Unknown message type {} from item editor\n", cmd);
             return false;
@@ -370,7 +489,10 @@ void InventoryEditor::QueueModList(std::string_view message)
             WriteString(write, path);
             WriteString(write, winner);
         }
+        write.WriteUint32(static_cast<uint32_t>(mod.problems.size()));
+        WriteProblems(write, mod.problems);
     }
+    WriteProblems(write, ModLoader::GeneralProblems());
 
     m_outbox.push_back(std::move(write).TakeBuffer());
     lws_callback_on_writable(m_client);
@@ -513,6 +635,7 @@ int InventoryEditor::Callback(lws *wsi, int reason, void *user, void *in, size_t
 
         auto session = static_cast<Session *>(user);
         session->partial.insert(session->partial.end(), (uint8_t *)in, (uint8_t *)in + len);
+        s_receivedBytes += len;
         if (lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0)
         {
             self->m_inbox.push_back(std::move(session->partial));

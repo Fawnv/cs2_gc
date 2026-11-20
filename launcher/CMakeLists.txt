@@ -23,11 +23,20 @@ if (OUTDIR)
         $<TARGET_FILE:cs2_gc_launcher>
         ${OUTDIR}/$<TARGET_FILE_NAME:cs2_gc_launcher>)
 
-    # the inventory editor page (served by the gc at http://127.0.0.1:13001/), always refreshed
-    add_custom_command(TARGET cs2_gc_launcher POST_BUILD
+    # on every build, not only when the exe is linked again (a change to the page or to the mod alone
+    # doesn't relink it): the inventory editor page (served by the gc at http://127.0.0.1:13001/) and
+    # the mods that ship with cs2_gc (the upgrader, its code has to match the exe; the user's mod.txt
+    # with on/off and priority stays)
+    add_custom_target(cs2_gc_data ALL
         COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/editor
-        ${OUTDIR}/cs2_gc/editor)
+            ${CMAKE_SOURCE_DIR}/editor
+            ${OUTDIR}/cs2_gc/editor
+        COMMAND ${CMAKE_COMMAND}
+            -DSRC=${CMAKE_SOURCE_DIR}/mods/upgrader
+            -DDST=${OUTDIR}/cs2_gc/mods/upgrader
+            -P ${CMAKE_SOURCE_DIR}/cmake/install_builtin_mod.cmake
+        VERBATIM)
+    add_dependencies(cs2_gc_data cs2_gc_launcher)
 
     # example data next to the exe, never overwriting the user's files
     foreach(DATA_FILE config.txt inventory.txt items_extra.txt price_sheet.txt)

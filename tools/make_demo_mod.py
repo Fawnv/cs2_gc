@@ -18,10 +18,10 @@ import argparse
 import os
 import re
 import shutil
-import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from make_music_mod import add_inventory_item, cs2_running  # noqa: E402
 from vpk_extract import read_file, read_tree  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -39,32 +39,12 @@ for size in ("light", "medium", "heavy"):
                    f"panorama/images/econ/default_generated/weapon_ak47_cs2gc_demo_{size}_png.vtex_c"))
 
 
-def cs2_running():
-    try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cs2.exe"], capture_output=True, text=True).stdout
-    except OSError:
-        return False
-    return "cs2.exe" in out.lower()
-
-
 def add_item(inventory_path):
     text = open(inventory_path, encoding="utf-8").read()
     if re.search(r'"6"\s+"%d"' % DEMO_PAINT_KIT, text):
         print("inventory already has the demo AK-47")
         return
-    ids = [int(x) for x in re.findall(r'^\t"(\d+)"\s*$', text, re.M)]
-    new_id = max(ids, default=0) + 1
-    block = (
-        f'\t"{new_id}"\n\t{{\n'
-        f'\t\t"inventory"\t\t"{new_id}"\n\t\t"def_index"\t\t"7"\n\t\t"level"\t\t"1"\n'
-        f'\t\t"quality"\t\t"4"\n\t\t"flags"\t\t"0"\n\t\t"origin"\t\t"8"\n\t\t"in_use"\t\t"0"\n'
-        f'\t\t"rarity"\t\t"6"\n\t\t"attributes"\n\t\t{{\n'
-        f'\t\t\t"6"\t\t"{DEMO_PAINT_KIT}"\n\t\t\t"7"\t\t"1"\n\t\t\t"8"\t\t"0.05"\n\t\t}}\n\t}}\n'
-    )
-    end = text.rstrip().rfind("}")
-    text = text[:end] + block + text[end:]
-    shutil.copyfile(inventory_path, inventory_path + ".before_demo_mod")
-    open(inventory_path, "w", encoding="utf-8", newline="\n").write(text)
+    new_id = add_inventory_item(inventory_path, 7, 4, 6, [(6, DEMO_PAINT_KIT), (7, 1), (8, 0.05)], ".before_demo_mod")
     print(f"added AK-47 | cs2_gc demo as item {new_id} (backup: inventory.txt.before_demo_mod)")
 
 
@@ -108,7 +88,7 @@ def main():
 
     if args.add_item:
         if cs2_running():
-            print("cs2.exe is running, not touching inventory.txt (close the game and run again)")
+            print("the game is running, not touching inventory.txt (close the game and run again)")
         else:
             add_item(os.path.join(args.data, "inventory.txt"))
 

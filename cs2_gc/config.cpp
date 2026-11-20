@@ -55,6 +55,13 @@ void GCConfig::Load()
         }
     }
 
+    // the game's own language always gets the mods' texts, whatever the list says
+    std::string gameLanguage = Platform::GameLanguage();
+    if (!gameLanguage.empty() && std::find(m_modLanguages.begin(), m_modLanguages.end(), gameLanguage) == m_modLanguages.end())
+    {
+        m_modLanguages.push_back(gameLanguage);
+    }
+
     const KeyValue *ranks = config.GetSubkey("ranks");
     if (ranks)
     {

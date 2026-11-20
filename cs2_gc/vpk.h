@@ -13,7 +13,10 @@ struct VpkFile
 };
 
 // writes a v2 *_dir.vpk with all data inside the dir file (archive index 0x7fff), no md5/signature sections
-bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files);
+// all data inside the _dir file. False (with the reason) when it can't be written, or when the data
+// is over what a VPK v2 can address in one file (4 GB: offsets and sizes are 32-bit). Written to a
+// .tmp file that then takes the vpk's place, so a vpk is never half written
+bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files, std::string *error = nullptr);
 
 // standard CRC-32 (zlib/png), also how the client names Armory shop entries
 uint32_t Crc32(std::string_view data);

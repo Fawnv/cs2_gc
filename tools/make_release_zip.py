@@ -48,6 +48,12 @@ def main():
     entries.append(("release/cs2_gc.exe", args.exe))
     for f in DATA_FILES:
         entries.append((f"release/cs2_gc/{f}", os.path.join(source, "examples", f)))
+    # the mods that ship with cs2_gc (the upgrader), in the data folder's mods
+    builtin = os.path.join(source, "mods")
+    for root, _, files in os.walk(builtin):
+        for f in sorted(files):
+            path = os.path.join(root, f)
+            entries.append(("release/cs2_gc/mods/" + os.path.relpath(path, builtin).replace(os.sep, "/"), path))
     editor = os.path.join(source, "editor")
     for root, _, files in os.walk(editor):
         for f in sorted(files):
@@ -57,7 +63,7 @@ def main():
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for inside, path in entries:
             data = open(path, "rb").read()
-            if inside.endswith((".cmd", ".txt")) and not inside.startswith("release/cs2_gc/editor/"):
+            if inside.endswith((".cmd", ".txt")) and not inside.startswith(("release/cs2_gc/editor/", "release/cs2_gc/mods/")):
                 # Notepad and cmd.exe want CRLF
                 data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
             z.writestr(f"{name}/{inside}", data)

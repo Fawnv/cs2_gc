@@ -1,4 +1,9 @@
-import { Command, decodeMessage, encodeCreate, encodeDestroy, encodeModify, encodeModListRequest, encodeModSet } from './protocol.js';
+import { Command, decodeMessage, encodeCreate, encodeDestroy, encodeModify, encodeModListRequest, encodeModSet,
+  encodeModInstallBegin, encodeModInstallFile, encodeModInstallEnd, encodeModDelete } from './protocol.js';
+import { openModArchive } from './mod-archive.js';
+
+const INSTALL_PIECE = 256 * 1024; // the GC reads 64 KB at a time, a piece is a few reads
+const INSTALL_BUFFERED = 4 * 1024 * 1024; // wait while the browser holds more than this unsent
 import { InventoryState } from './inventory-state.js';
 
 export class InventoryConnection {
@@ -20,9 +25,62 @@ export class InventoryConnection {
     this.pendingDelete = null;
     this.deleteTimer = null;
     this.deletion = null;
-    // CSForge: { modsOn, loaded, message, mods } from the last modList, null until the GC answers
+    // CSForge: { modsOn, loaded, message, mods, general } from the last modList, null until the GC answers
     this.mods = null;
     this.modsPending = false;
+    // a mod being installed: { folder, done, total, error }
+    this.installing = null;
+  }
+
+  deleteMod(folder) {
+    if (this.socket?.readyState !== 1 || this.modsPending || this.installing) return;
+    this.modsPending = true;
+    this.socket.send(encodeModDelete(folder));
+    this.onChange(this);
+  }
+
+  // a mod archive (.zip with mod.txt) from a file input or a drop: unpacked here, sent file by file
+  async installMod(file) {
+    const socket = this.socket;
+    if (socket?.readyState !== 1 || this.modsPending || this.installing) return;
+    const note = message => {
+      this.mods = { ...(this.mods || { modsOn: false, loaded: false, mods: [], general: [] }), message };
+      this.onChange(this);
+    };
+    let archive;
+    try {
+      archive = await openModArchive(file);
+    } catch (error) {
+      note(`Can't install ${file.name}: ${error.message}`);
+      return;
+    }
+    this.installing = { folder: archive.folder, done: 0, total: archive.totalBytes, error: null };
+    this.onChange(this);
+    try {
+      socket.send(encodeModInstallBegin(archive.folder));
+      for (const entry of archive.files) {
+        const bytes = await entry.read();
+        let at = 0;
+        do {
+          if (this.socket !== socket || socket.readyState !== 1) throw new Error('the connection to the GC was lost');
+          if (this.installing.error) throw new Error(this.installing.error);
+          while (socket.bufferedAmount > INSTALL_BUFFERED) await new Promise(resolve => this.setTimer(resolve, 20));
+          const piece = bytes.subarray(at, at + INSTALL_PIECE);
+          socket.send(encodeModInstallFile(entry.path, at === 0, piece));
+          at += INSTALL_PIECE;
+          this.installing.done += piece.byteLength;
+          this.onChange(this);
+        } while (at < bytes.byteLength);
+      }
+      this.modsPending = true;
+      socket.send(encodeModInstallEnd(true));
+    } catch (error) {
+      if (this.socket === socket && socket.readyState === 1) socket.send(encodeModInstallEnd(false));
+      if (!this.installing.error) note(`Can't install ${archive.folder}: ${error.message}`);
+    } finally {
+      this.installing = null;
+      this.onChange(this);
+    }
   }
 
   requestMods() {
@@ -195,8 +253,9 @@ export class InventoryConnection {
       try {
         const commands = decodeMessage(event.data);
         if (commands[0]?.type === Command.modList) {
-          const { modsOn, loaded, message, mods } = commands[0];
-          this.mods = { modsOn, loaded, message, mods };
+          const { modsOn, loaded, message, mods, general } = commands[0];
+          this.mods = { modsOn, loaded, message, mods, general };
+          if (this.installing && message.startsWith("Can't install")) this.installing.error = message;
           this.modsPending = false;
           this.onChange(this);
           return;

@@ -62,11 +62,16 @@
 <section id="mods-panel" role="tabpanel" aria-labelledby="mods-tab" hidden>
 <div class="mods-head">
 <p id="mods-status" role="status" aria-live="polite">Connect to see the mods.</p>
+<span class="mods-actions">
+<button id="mods-install" disabled>Install mod…</button>
 <button id="mods-refresh" disabled>Refresh</button>
+</span>
+<input type="file" id="mods-file" accept=".zip" hidden>
 </div>
 <p id="mods-message" role="status" aria-live="polite"></p>
+<p id="mods-progress" role="status" aria-live="polite" hidden></p>
 <div id="mods-list" role="list" aria-label="Mods"></div>
-<p class="mods-note">CSForge packs the enabled mods from cs2_gc\mods when the game starts, lowest priority first: for a file two mods both have, the higher priority wins. Changes here are saved to the mod's mod.txt and apply at the next game start.</p>
+<p class="mods-note">CSForge packs the enabled mods from cs2_gc\mods when the game starts, lowest priority first: for a file two mods both have, the higher priority wins. Changes here are saved to the mod's mod.txt and apply at the next game start. To install a mod, pick its .zip (made by tools\\pack_mod.py, or any zip with mod.txt) or drop it here; a mod of the same folder name is replaced. Delete moves a mod to cs2_gc\\mods\\_trash.</p>
 </section>
 <aside id="inspector" aria-label="Item inspector">
 <button id="inspector-close" hidden aria-label="Close item inspector">Close</button>

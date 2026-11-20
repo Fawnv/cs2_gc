@@ -1,0 +1,30 @@
+// the upgrader, a mod that ships with cs2_gc: the window is JavaScript put into the game's inventory
+// scripts, the bets and the rolls are cs2_gc's (it needs the same version of it, see panorama.txt)
+"panorama"
+{
+	// cs2_gc's side of the upgrader in this version: the catalog the window gets
+	// (@csforge:upgrader_catalog@...) and the bets it sends. Another version: nothing is applied
+	"needs"		"upgrader 1"
+
+	// Upgrade in the context menu of a skin
+	"menu"
+	{
+		"file"		"panorama/scripts/common/item_context_entries.vts_c"
+		"anchor"	"panorama/menu_entry.anchor.js"
+		"code"		"panorama/menu_entry.js"
+	}
+	// the window, at the top of the inventory script
+	"window"
+	{
+		"file"		"panorama/scripts/mainmenu_inventory.vts_c"
+		"anchor"	"panorama/upgrader.anchor.js"
+		"code"		"panorama/upgrader.js"
+	}
+	// the tab, after the game's own
+	"tab"
+	{
+		"file"		"panorama/scripts/mainmenu_inventory.vts_c"
+		"anchor"	"panorama/install.anchor.js"
+		"code"		"panorama/install.js"
+	}
+}

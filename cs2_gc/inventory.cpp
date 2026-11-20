@@ -22,6 +22,9 @@ constexpr uint32_t SlotUneqip = 0xffff;
 
 static AttributeDefIndex StickerAttributeForSlot(AttributeDefIndex defIndex, uint32_t slot);
 
+// the attribute slot a sticker is stored in, from the weapon's sticker slot the client names
+static uint32_t StickerStorageSlot(const Item &item, uint32_t placedAt);
+
 // get the full item id of the casket item is in
 static uint64_t GetCasketId(const Item &item)
 {
@@ -479,10 +482,30 @@ Item &Inventory::CreateItem(InventoryModify &modify, ItemDesc &&desc)
 
 void Inventory::ReadFromFile()
 {
-    KeyValueRead inventoryRead{ InventoryFilePath().c_str() };
-    if (!inventoryRead.Good())
+    const std::string &path = InventoryFilePath();
+    if (!Platform::FileExists(path))
     {
-        return;
+        return; // a new inventory
+    }
+
+    KeyValueRead inventoryRead{ path.c_str() };
+    if (!inventoryRead.Complete())
+    {
+        // going on would mean an empty inventory, or one without the items after the damaged place,
+        // and the first save would write that over the file
+        Platform::Error("%s is damaged: it can't be read, or its braces and quotes don't match "
+                        "(a block or a string isn't closed, or there is a '}' too many).\n\n"
+                        "cs2_gc stops here, or the game would save an inventory without the items it couldn't read.\n\n"
+                        "Fix the file, or put %s.bak in its place (the inventory as the last start read it, "
+                        "if there was one), or delete the file to start a new inventory.",
+            path.c_str(),
+            path.c_str());
+    }
+
+    // the inventory as this start found it, in case something ruins it while playing
+    if (!Platform::CopyTo(path, path + ".bak"))
+    {
+        Platform::Print("Could not copy {} to {}.bak\n", path, path);
     }
 
     const KeyValue &inventoryKey = inventoryRead.Root();
@@ -527,10 +550,14 @@ void Inventory::WriteToFile() const
         m_items.size(),
         m_defaultEquips.size());
 
-    FILE *f = Platform::OpenFile(InventoryFilePath(), "wb");
+    // into a file next to it that then takes its place: if the game dies while writing,
+    // inventory.txt is still the one saved before
+    const std::string tempPath = InventoryFilePath() + ".tmp";
+
+    FILE *f = Platform::OpenFile(tempPath, "wb");
     if (!f)
     {
-        Platform::Print("Could not open {} for writing\n", InventoryFilePath());
+        Platform::Print("Could not open {} for writing\n", tempPath);
         return;
     }
 
@@ -572,15 +599,29 @@ void Inventory::WriteToFile() const
 
     if (writeFailed)
     {
-        Platform::Print("Writing {} failed\n", InventoryFilePath());
+        Platform::Print("Writing {} failed\n", tempPath);
     }
 
     if (closeError != 0)
     {
         Platform::Print("Closing {} failed: {} ({})\n",
-            InventoryFilePath(),
+            tempPath,
             strerror(closeError),
             closeError);
+    }
+
+    if (writeFailed || closeError != 0)
+    {
+        Platform::RemoveFile(tempPath);
+        return;
+    }
+
+    if (!Platform::ReplaceWith(tempPath, InventoryFilePath()))
+    {
+        Platform::Print("Could not put {} in the place of {}, the inventory on disk is the one saved before\n",
+            tempPath,
+            InventoryFilePath());
+        Platform::RemoveFile(tempPath);
     }
 }
 
@@ -1032,7 +1073,7 @@ bool Inventory::ItemHasKeychain(uint64_t itemId)
 bool Inventory::ItemHasSticker(uint64_t itemId, uint32_t slot)
 {
     Item *item = FindItem(itemId);
-    return item && item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot));
+    return item && item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, StickerStorageSlot(*item, slot)));
 }
 
 InventoryChangeMessages Inventory::RemoveKeychain(uint64_t itemId, uint32_t slot)
@@ -1345,11 +1386,40 @@ InventoryChangeMessages Inventory::SetItemPositions(
     return FinishChanges(modify);
 }
 
+// 6 attribute slots for the 5 stickers a weapon can have ("sticker slot 5 id" is 133)
+constexpr uint32_t StickerSlotCount = 6;
+
 static AttributeDefIndex StickerAttributeForSlot(AttributeDefIndex defIndex, uint32_t slot)
 {
     // offset by id, wear, scale, rotation
     uint32_t result = FromEnum(defIndex) + (slot * 4);
     return ToEnum<AttributeDefIndex>(result);
+}
+
+// Stickers placed at the same weapon slot are stored in free attribute slots: "sticker slot N schema"
+// says which weapon slot slot N is placed at (see ApplySticker). The client names the placed slot.
+static uint32_t StickerStorageSlot(const Item &item, uint32_t placedAt)
+{
+    if (placedAt < StickerSlotCount && item.HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, placedAt)))
+    {
+        return placedAt;
+    }
+
+    for (uint32_t slot = 0; slot < StickerSlotCount; slot++)
+    {
+        if (!item.HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot)))
+        {
+            continue;
+        }
+
+        auto schema = ToEnum<AttributeDefIndex>(FromEnum(AttributeDefIndex::StickerSchema0) + slot);
+        if (item.HasAttribute(schema) && item.GetAttributeValue<uint32_t>(schema) == placedAt)
+        {
+            return slot;
+        }
+    }
+
+    return placedAt;
 }
 
 // cs2 offsets are 2 attributes per slot
@@ -1456,11 +1526,60 @@ InventoryChangeMessages Inventory::ApplySticker(const CMsgApplySticker &message)
         assert(!message.baseitem_defidx() && message.item_item_id());
     }
 
-    auto attributeStickerId = StickerAttributeForSlot(AttributeDefIndex::StickerId0, message.sticker_slot());
-    auto attributeStickerWear = StickerAttributeForSlot(AttributeDefIndex::StickerWear0, message.sticker_slot());
+    // the client sends the weapon's sticker slot the sticker is placed at, its offsets count from there.
+    // Since stickers can go anywhere, several can be placed at one slot: each is stored in a free one of
+    // the 6 attribute slots ("sticker slot 5 id" is 133), with "sticker slot N schema" saying where it's
+    // placed when that's not N (client.dll uses it as the sticker's slot). Storing it at the slot it asked
+    // for overwrote the sticker there (stickers vanished), storing it elsewhere without the schema drew it
+    // from the wrong place. 5 stickers at most ("max_num_stickers")
+    constexpr uint32_t StickerLimit = 5;
+    const uint32_t placedAt = message.sticker_slot();
+    uint32_t slot = placedAt;
+    uint32_t stickersOn = 0;
+    for (uint32_t s = 0; s < StickerSlotCount; s++)
+    {
+        stickersOn += item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, s)) ? 1 : 0;
+    }
+    if (slot >= StickerSlotCount || item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot)))
+    {
+        uint32_t freeSlot = 0;
+        while (freeSlot < StickerSlotCount && item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, freeSlot)))
+        {
+            freeSlot++;
+        }
+        uint32_t there = slot < StickerSlotCount
+            ? item->GetAttributeValue<uint32_t>(StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot)) : 0;
+        if (stickersOn >= StickerLimit || freeSlot >= StickerSlotCount)
+        {
+            Platform::Print("ApplySticker: item {} has {} stickers already (slot {} asked for, kit {} there), sticker kit {} not applied and kept\n",
+                message.item_item_id(), stickersOn, slot, there, stickerKit);
+            return {};
+        }
+        Platform::Print("ApplySticker: slot {} of item {} has sticker kit {} stored, sticker kit {} is stored in slot {}\n",
+            slot, message.item_item_id(), there, stickerKit, freeSlot);
+        slot = freeSlot;
+    }
+    Platform::Print("ApplySticker: sticker kit {} on item {} (def {}) placed at slot {}{}, wear {} scale {} rotation {} offset {} {}\n",
+        stickerKit, message.item_item_id(), FromEnum(item->DefIndex()), placedAt,
+        slot != placedAt ? std::format(" (stored in {})", slot) : std::string{},
+        message.sticker_wear(), message.sticker_scale(), message.sticker_rotation(), message.sticker_offset_x(), message.sticker_offset_y());
+
+    auto attributeStickerId = StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot);
+    auto attributeStickerWear = StickerAttributeForSlot(AttributeDefIndex::StickerWear0, slot);
 
     // add the sticker id attribute
     modify.SetItemAttribute(*item, attributeStickerId, stickerKit);
+
+    // where it's placed, when it's stored in another slot
+    auto attributeStickerSchema = ToEnum<AttributeDefIndex>(FromEnum(AttributeDefIndex::StickerSchema0) + slot);
+    if (slot != placedAt)
+    {
+        modify.SetItemAttribute(*item, attributeStickerSchema, placedAt);
+    }
+    else if (item->HasAttribute(attributeStickerSchema))
+    {
+        modify.RemoveItemAttributes(*item, { attributeStickerSchema });
+    }
 
     // add the sticker wear attribute if this is not a patch (mikkotodo revisit...)
     if (sticker->DefIndex() != ItemDefIndex::Patch)
@@ -1471,18 +1590,18 @@ InventoryChangeMessages Inventory::ApplySticker(const CMsgApplySticker &message)
     // cs2 free placement
     if (message.has_sticker_rotation())
     {
-        modify.SetItemAttribute(*item, StickerAttributeForSlot(AttributeDefIndex::StickerRotation0, message.sticker_slot()), message.sticker_rotation());
+        modify.SetItemAttribute(*item, StickerAttributeForSlot(AttributeDefIndex::StickerRotation0, slot), message.sticker_rotation());
     }
 
     if (message.has_sticker_scale())
     {
-        modify.SetItemAttribute(*item, StickerAttributeForSlot(AttributeDefIndex::StickerScale0, message.sticker_slot()), message.sticker_scale());
+        modify.SetItemAttribute(*item, StickerAttributeForSlot(AttributeDefIndex::StickerScale0, slot), message.sticker_scale());
     }
 
     if (message.has_sticker_offset_x() || message.has_sticker_offset_y())
     {
-        modify.SetItemAttribute(*item, StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetX0, message.sticker_slot()), message.sticker_offset_x());
-        modify.SetItemAttribute(*item, StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetY0, message.sticker_slot()), message.sticker_offset_y());
+        modify.SetItemAttribute(*item, StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetX0, slot), message.sticker_offset_x());
+        modify.SetItemAttribute(*item, StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetY0, slot), message.sticker_offset_y());
     }
 
     uint64_t itemId = item->FullIdFor(AccountId());
@@ -1504,6 +1623,7 @@ static void RemoveStickerAttributes(InventoryModify &modify, Item &item, uint32_
         StickerAttributeForSlot(AttributeDefIndex::StickerRotation0, slot),
         StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetX0, slot),
         StickerOffsetAttributeForSlot(AttributeDefIndex::StickerOffsetY0, slot),
+        ToEnum<AttributeDefIndex>(FromEnum(AttributeDefIndex::StickerSchema0) + slot),
     });
 }
 
@@ -1517,37 +1637,57 @@ InventoryChangeMessages Inventory::ScrapeSticker(const CMsgApplySticker &message
         return {};
     }
 
-    auto attributeStickerWear = StickerAttributeForSlot(AttributeDefIndex::StickerWear0, message.sticker_slot());
-
-    // mikkotodo randomize
-    float wearIncrement = 1.0f / 9;
-
-    // increment the wear, if there was no war (patches) or it went over 1, remove the sticker/patch
-    auto wearUpdate = modify.IncrementItemAttribute(*item, attributeStickerWear, wearIncrement, 0.0f, 1.0f);
-    if (wearUpdate != AttributeIncrement::Ok)
+    // the client names the weapon's sticker slot, the sticker may be stored in another attribute slot
+    const uint32_t slot = StickerStorageSlot(*item, message.sticker_slot());
+    if (!item->HasAttribute(StickerAttributeForSlot(AttributeDefIndex::StickerId0, slot)))
     {
-        // mikkotodo fix... should this be deduced from the item???
-        EGCItemCustomizationNotification request = k_EGCItemCustomizationNotification_RemoveSticker;
-        if (wearUpdate == AttributeIncrement::NoAttribute)
-        {
-            request = k_EGCItemCustomizationNotification_RemovePatch;
-        }
-
-        if (item->GetRarity() == Rarity::Default)
-        {
-            // this was a default weapon clone with a sticker so destroy the entire item
-            uint64_t fakeItemId = static_cast<uint64_t>(item->DefIndex()) | ItemIdDefaultItemMask;
-            DestroyItem(modify, item);
-            return FinishChanges(modify, request, { fakeItemId });
-        }
-
-        // remove the sticker
-        RemoveStickerAttributes(modify, *item, message.sticker_slot());
-
-        return FinishChanges(modify, request, { item->FullIdFor(AccountId()) });
+        Platform::Print("ScrapeSticker: item {} has no sticker at slot {}\n", message.item_item_id(), message.sticker_slot());
+        return {};
     }
 
-    return FinishChanges(modify);
+    auto attributeStickerWear = StickerAttributeForSlot(AttributeDefIndex::StickerWear0, slot);
+
+    // cs2's scrape popup sends the wear the sticker is scraped to in sticker_wear_target (0..1 in the
+    // sticker's steps) and the wear it has now in sticker_wear, or 111
+    // ("WearItemSticker(item, slot, 111)") as the target to scrape it off completely - past any wear.
+    // csgo had no target: it sent the new wear (1.0 = off) in sticker_wear. Patches have no wear and
+    // are removed ("remove_patch" sends 0).
+    const bool patch = !item->HasAttribute(attributeStickerWear);
+    const float targetWear = message.has_sticker_wear_target() ? message.sticker_wear_target()
+        : (message.has_sticker_wear() ? message.sticker_wear() : 1.0f);
+    // a scrape on a sticker already at extreme wear is the one that takes it off, even if the client
+    // sent the "off" 111 clamped to 1.0
+    const bool atExtremeWear = !patch && item->GetAttributeValue<float>(attributeStickerWear) >= 1.0f;
+    const bool removeCompletely = patch
+        || (m_oldProtocol ? targetWear >= 1.0f : (targetWear > 1.0f || (targetWear >= 1.0f && atExtremeWear)));
+    Platform::Print("ScrapeSticker: item {} slot {} (stored in {}) wear {} -> target {}{}\n",
+        message.item_item_id(), message.sticker_slot(), slot, message.sticker_wear(), targetWear,
+        removeCompletely ? " (off)" : "");
+    if (!removeCompletely)
+    {
+        const float newWear = std::clamp(targetWear, 0.0f, 1.0f);
+        modify.SetItemAttribute(*item, attributeStickerWear, newWear);
+        return FinishChanges(modify);
+    }
+
+    // the sticker/patch is scraped off completely
+    EGCItemCustomizationNotification request = patch
+        ? k_EGCItemCustomizationNotification_RemovePatch
+        : k_EGCItemCustomizationNotification_RemoveSticker;
+
+    if (item->GetRarity() == Rarity::Default)
+    {
+        // this was a default weapon clone with a sticker so destroy the entire item
+        uint64_t fakeItemId = static_cast<uint64_t>(item->DefIndex()) | ItemIdDefaultItemMask;
+        DestroyItem(modify, item);
+        return FinishChanges(modify, request, { fakeItemId });
+    }
+
+    Platform::Print("ScrapeSticker: item {} slot {} (stored in {}) {} scraped off\n",
+        message.item_item_id(), message.sticker_slot(), slot, patch ? "patch" : "sticker");
+    RemoveStickerAttributes(modify, *item, slot);
+
+    return FinishChanges(modify, request, { item->FullIdFor(AccountId()) });
 }
 
 InventoryChangeMessages Inventory::IncrementKillCountAttribute(uint64_t itemId, uint32_t amount)

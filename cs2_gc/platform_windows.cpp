@@ -1,7 +1,10 @@
 #include "stdafx.h"
 #include "platform.h"
 #include "config.h" // yuck
+#include "keyvalue.h"
+#include <filesystem>
 #include <windows.h>
+#include <shellapi.h>
 
 namespace Platform
 {
@@ -136,7 +139,10 @@ void Error(const char *format, ...)
     vsnprintf(buffer, sizeof(buffer), format, ap);
     va_end(ap);
 
-    MessageBoxW(nullptr, ToWide(buffer).c_str(), L"cs2_gc", MB_OK | MB_ICONERROR);
+    Print("Fatal error: {}\n", buffer);
+
+    // on top: the game's window may be up already
+    MessageBoxW(nullptr, ToWide(buffer).c_str(), L"cs2_gc", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
     ExitProcess(1);
 }
 
@@ -278,6 +284,96 @@ bool PatchGraffitiPublicKey(std::string_view moduleName, const void *original, c
 bool RemoveFile(const std::string &utf8Path)
 {
     return DeleteFileW(ToWide(utf8Path).c_str()) ? true : false;
+}
+
+static std::string LanguageWord(std::string_view text)
+{
+    std::string word;
+    for (char c : text)
+    {
+        if (!std::isalpha(static_cast<unsigned char>(c)) || word.size() >= 32)
+        {
+            return {};
+        }
+        word += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return word;
+}
+
+std::string GameLanguage()
+{
+    int argc = 0;
+    wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    std::string fromCommandLine;
+    for (int i = 1; argv && i + 1 < argc; i++)
+    {
+        if (!_wcsicmp(argv[i], L"-language"))
+        {
+            fromCommandLine = LanguageWord(ToUtf8(argv[i + 1]));
+        }
+    }
+    LocalFree(argv);
+    if (!fromCommandLine.empty())
+    {
+        return fromCommandLine;
+    }
+
+    // <library>\steamapps\common\<cs2>\game\csgo -> <library>\steamapps\appmanifest_730.acf
+    std::filesystem::path manifest = std::filesystem::path{ ToWide(s_gameDir) }.parent_path().parent_path().parent_path().parent_path() / L"appmanifest_730.acf";
+    std::string manifestPath = ToUtf8(manifest.wstring());
+    if (!FileExists(manifestPath))
+    {
+        return {};
+    }
+
+    KeyValueRead read{ manifestPath.c_str() };
+    const KeyValue *state = read.Good() ? read.Root().GetSubkey("AppState") : nullptr;
+    for (const char *block : { "UserConfig", "MountedConfig" })
+    {
+        const KeyValue *config = state ? state->GetSubkey(block) : nullptr;
+        std::string language = config ? LanguageWord(config->GetString("language")) : std::string{};
+        if (!language.empty())
+        {
+            return language;
+        }
+    }
+    return {};
+}
+
+bool FileExists(const std::string &utf8Path)
+{
+    DWORD attributes = GetFileAttributesW(ToWide(utf8Path).c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+bool ReplaceWith(const std::string &from, const std::string &to)
+{
+    std::wstring wideFrom = ToWide(from);
+    std::wstring wideTo = ToWide(to);
+
+    // an antivirus or an indexer may hold `to` open for a moment
+    for (int attempt = 0; attempt < 10; attempt++)
+    {
+        if (MoveFileExW(wideFrom.c_str(), wideTo.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            return true;
+        }
+
+        DWORD error = GetLastError();
+        if (error != ERROR_SHARING_VIOLATION && error != ERROR_ACCESS_DENIED)
+        {
+            return false;
+        }
+
+        Sleep(20);
+    }
+
+    return false;
+}
+
+bool CopyTo(const std::string &from, const std::string &to)
+{
+    return CopyFileW(ToWide(from).c_str(), ToWide(to).c_str(), FALSE) ? true : false;
 }
 
 } // namespace Platform

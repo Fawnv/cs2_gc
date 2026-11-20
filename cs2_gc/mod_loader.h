@@ -8,6 +8,18 @@
 //                             (or a mod loaded earlier) already has is skipped, duplicates crash the client
 //   localization.txt          "lang" { "Tokens" { ... } } added to every language in "mod_languages",
 //   localization_<lang>.txt   or to one; here existing tokens get overridden (rename items, UI text)
+//   items_game_override.txt   changes to what the game (or an earlier mod) already has, merged deep: a text
+//                             replaces the text at the same place, a block adds to / changes the block there
+//                             ("client_loot_lists" { "crate_community_33_ancient" { "[my_kit]weapon_ak47" "1" } })
+//   items_extra.txt           the same sections, but only for the gc's item schema: the client doesn't get
+//                             them (a case's list of knives, like the game's own *_unusual lists)
+//   panorama.txt              code put into the game's compiled Panorama scripts, each patch a block:
+//                             "panorama" { "1" { "file" "panorama/scripts/mainmenu.vts_c" "anchor" "anchor.js"
+//                             "code" "code.js" } }: the text of code.js goes in front of the text of anchor.js,
+//                             which has to be in the script exactly once (both files in the mod's folder).
+//                             "needs" "upgrader 1" in the block: applied only with that version of cs2_gc's
+//                             upgrader. @csforge:upgrader_catalog@ (_currency@, _price_time@) in the code
+//                             are replaced by the upgrader's catalog of this start (mods\upgrader uses them)
 //   files\...                 files with game relative paths (vtex_c, vcompmat_c, vsnd_c...), new or
 //                             replacing the game's; for the same path the higher priority mod wins
 //
@@ -34,6 +46,14 @@ struct ModInfo
     std::string description;
     bool enabled{ true };
     int priority{};
+    bool infoBroken{}; // mod.txt is there but doesn't parse, the defaults are used
+};
+
+// what this run's build had to say about a mod (or about CSForge itself), for the editor's Mods tab
+struct ModProblem
+{
+    bool error{}; // false: a warning, the rest of the mod loaded
+    std::string text;
 };
 
 // every folder in <data>\mods (except _build and dot folders), sorted by load order
@@ -49,8 +69,13 @@ struct ModStatus
     bool changed{}; // enabled/priority/new since this game run loaded the mods
     size_t lostFiles{}; // files\ entries a higher priority enabled mod replaces
     std::vector<std::pair<std::string, std::string>> lost; // the first few: path, winning mod folder
+    std::vector<ModProblem> problems; // from the build of this game run (also in gc_log.txt)
 };
 std::vector<ModStatus> ModStatuses();
+
+// the build's problems that belong to no mod: a built-in fix that no longer fits the game's
+// script, a vpk that couldn't be written
+std::vector<ModProblem> GeneralProblems();
 
 // whether this game run built and mounted the mods
 bool LoadedThisRun();
@@ -58,6 +83,17 @@ bool LoadedThisRun();
 // writes "enabled" and "priority" into <data>\mods\<folder>\mod.txt (the rest of the file stays
 // as it is); takes effect at the next game start, when the vpk gets built again
 bool SetModState(std::string_view folder, bool enabled, int priority, std::string &error);
+
+// installing a mod from the editor's Mods tab, which unpacks an archive and sends it file by file:
+// the files go to <data>\mods\_install\<folder> and take the mod's place when all of it has come
+// (a mod of that name there goes to the trash). One install at a time.
+bool InstallBegin(std::string_view folder, std::string &error);
+bool InstallWrite(std::string_view path, bool first, const void *data, size_t size, std::string &error);
+bool InstallEnd(bool commit, std::string &summary, std::string &error);
+
+// moves a mod to <data>\mods\_trash\<folder> (not loaded from there, and easy to put back by
+// hand); a mod of that name already in the trash is deleted for good
+bool DeleteMod(std::string_view folder, std::string &error);
 
 // builds the vpk and hooks the filesystem. Call before Source2Main.
 void Install();
@@ -105,11 +141,13 @@ enum class MergeMode
 {
     SkipExisting, // items_game.txt: ids already defined stay as they are
     OverrideExisting, // localization: string values get replaced
+    DeepOverride, // items_game_override.txt: blocks merge at every level, texts get replaced, new keys added
 };
 
 struct MergeReport
 {
     size_t added{};
+    std::vector<std::string> addedKeys; // "paint_kits/20001"
     std::vector<std::string> skipped; // "paint_kits/44"
     std::vector<std::string> overridden; // "tokens/paintkit_aq_oiled_tag"
 };

@@ -232,6 +232,29 @@ function element(tag, className, text) {
   if (text !== undefined) node.textContent = text;
   return node;
 }
+// what the build of this game run had to say: errors first, a mod with only warnings starts folded
+function problemList(problems, total) {
+  const errors = problems.filter(problem => problem.error).length;
+  const box = element('details', 'mod-problems' + (errors ? ' mod-has-errors' : ''));
+  box.open = errors > 0 || total <= 3;
+  const count = `${total} problem${total === 1 ? '' : 's'}`;
+  box.append(element('summary', '', errors ? `${count}, ${errors} of them ${errors === 1 ? 'an error' : 'errors'}` : count));
+  const list = element('ul');
+  for (const problem of [...problems].sort((a, b) => Number(b.error) - Number(a.error))) {
+    list.append(element('li', problem.error ? 'mod-error' : '', problem.text));
+  }
+  if (total > problems.length) list.append(element('li', '', `…and ${total - problems.length} more, see cs2_gc\\gc_log.txt`));
+  box.append(list);
+  return box;
+}
+function generalRow(problems) {
+  const row = element('div', 'mod-row mod-general');
+  row.setAttribute('role', 'listitem');
+  const body = element('div');
+  body.append(element('div', 'mod-name', 'CSForge'), element('div', 'mod-sub', 'problems that belong to no mod'), problemList(problems, problems.length));
+  row.append(element('span'), body, element('span'));
+  return row;
+}
 function modRow(mod, state) {
   const busy = connection.modsPending || connection.socket?.readyState !== 1;
   const row = element('div', 'mod-row' + (mod.enabled ? '' : ' mod-off'));
@@ -265,6 +288,16 @@ function modRow(mod, state) {
     lost.append(list);
     body.append(lost);
   }
+  if (mod.problemCount) body.append(problemList(mod.problems, mod.problemCount));
+
+  const remove = element('button', 'mod-delete', 'Delete');
+  remove.disabled = busy || Boolean(connection.installing);
+  remove.addEventListener('click', () => {
+    if (remove.dataset.sure) { connection.deleteMod(mod.folder); return; }
+    remove.dataset.sure = '1';
+    remove.textContent = 'Sure? Click again';
+    setTimeout(() => { delete remove.dataset.sure; remove.textContent = 'Delete'; }, 4000);
+  });
 
   const priority = element('label', 'mod-priority', 'Priority');
   const input = element('input');
@@ -276,7 +309,7 @@ function modRow(mod, state) {
   };
   input.addEventListener('change', commit);
   input.addEventListener('keydown', event => { if (event.key === 'Enter') { event.preventDefault(); commit(); } });
-  priority.append(input);
+  priority.append(input, remove);
 
   row.append(toggle, body, priority);
   return row;
@@ -284,7 +317,11 @@ function modRow(mod, state) {
 let renderedMods = null, renderedModsPending = null;
 function renderMods(current) {
   const state = current.mods;
-  $('mods-refresh').disabled = current.socket?.readyState !== 1 || current.modsPending;
+  $('mods-refresh').disabled = current.socket?.readyState !== 1 || current.modsPending || Boolean(current.installing);
+  $('mods-install').disabled = $('mods-refresh').disabled;
+  const install = current.installing;
+  $('mods-progress').hidden = !install;
+  if (install) $('mods-progress').textContent = `Installing ${install.folder}: ${(install.done / 1048576).toFixed(1)} of ${(install.total / 1048576).toFixed(1)} MB…`;
   $('mods-count').textContent = state ? `(${state.mods.filter(mod => mod.enabled).length}/${state.mods.length})` : '';
   if (state === renderedMods && current.modsPending === renderedModsPending) return;
   renderedMods = state; renderedModsPending = current.modsPending;
@@ -302,15 +339,30 @@ function renderMods(current) {
     : `CSForge had nothing to load this game run. ${enabled} of ${state.mods.length} enabled now.`;
   $('mods-message').textContent = state.message;
   $('mods-message').classList.toggle('status-error', state.message.startsWith("Can't"));
-  if (!state.mods.length) {
+  if (!state.mods.length && !state.general.length) {
     $('mods-list').replaceChildren(element('p', '', 'No mods yet: every folder in cs2_gc\\mods is one (see the README, "CSForge").'));
     return;
   }
-  $('mods-list').replaceChildren(...state.mods.map(mod => modRow(mod, state)));
+  $('mods-list').replaceChildren(...(state.general.length ? [generalRow(state.general)] : []), ...state.mods.map(mod => modRow(mod, state)));
   if (focused >= 0) $('mods-list').children[focused]?.querySelector('input:not([disabled])')?.focus();
 }
 const connection = new InventoryConnection(current => { renderInventory(current); renderMods(current); });
 $('mods-refresh').addEventListener('click', () => connection.requestMods());
+$('mods-install').addEventListener('click', () => $('mods-file').click());
+$('mods-file').addEventListener('change', () => {
+  const file = $('mods-file').files[0];
+  $('mods-file').value = '';
+  if (file) connection.installMod(file);
+});
+$('mods-panel').addEventListener('dragover', event => {
+  if ([...(event.dataTransfer?.types || [])].includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }
+});
+$('mods-panel').addEventListener('drop', event => {
+  const file = event.dataTransfer?.files?.[0];
+  if (!file) return;
+  event.preventDefault();
+  connection.installMod(file);
+});
 $('connect').addEventListener('click', () => connection.connect());
 $('disconnect').addEventListener('click', () => connection.disconnect());
 window.addEventListener('pagehide', () => connection.disconnect());

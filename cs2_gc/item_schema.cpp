@@ -208,6 +208,21 @@ ItemSchema::ItemSchema()
         Platform::Print("{} is missing, knives/gloves won't drop from cases\n", extraPath);
     }
 
+    // the mods' own extras: what the gc has to know and the client isn't told, like the knife list
+    // of a mod's case (the game keeps its own cases' knives out of the public schema the same way)
+    if (GetConfig().m_mods)
+    {
+        for (const ModLoader::ModInfo &mod : ModLoader::ListMods())
+        {
+            std::string modExtraPath = Platform::DataPath("mods") + "\\" + mod.folder + "\\items_extra.txt";
+            if (mod.enabled && Platform::FileExists(modExtraPath))
+            {
+                bool merged = itemSchemaRead.MergeToFromFile(modExtraPath.c_str());
+                Platform::Print("CSForge: {}\\items_extra.txt {}\n", mod.folder, merged ? "added to the gc's item schema" : "doesn't parse, left out");
+            }
+        }
+    }
+
     // append the public item schema (with the mods' items if CSForge built some)
     std::string itemsGameText;
     if (!MergeItemSchema(itemSchemaRead, itemsGameText))

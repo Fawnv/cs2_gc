@@ -10,3 +10,6 @@ target_link_libraries(cs2_gc_selftest PRIVATE cs2_gc protobuf::libprotobuf-lite 
 if (MSVC)
     target_compile_definitions(cs2_gc_selftest PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
+
+# the mods that ship with cs2_gc (mods\upgrader) are built from the repo in the test
+target_compile_definitions(cs2_gc_selftest PRIVATE CS2GC_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

@@ -33,6 +33,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gen_invedit_catalog import parse_kv, to_dict  # noqa: E402
 from vpk_extract import read_file, read_tree  # noqa: E402
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(HERE)
+
+
+def default_data():
+    """The cs2_gc data folder when --data isn't given: release\\cs2_gc of the build, or before a build
+    (a fresh clone of the public repo) tools\\.._data, made on first use."""
+    built = os.path.join(REPO, "release", "cs2_gc")
+    return built if os.path.isdir(built) else os.path.join(REPO, "_data")
+
+
 BITRATES_V1 = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0]
 RATES_V1 = [44100, 48000, 32000]
 SAMPLES_PER_FRAME = 1152
@@ -171,11 +182,46 @@ def convert_to_mp3(path):
 
 
 def cs2_running():
+    """Whether the game is running under cs2_gc. Its process is cs2_gc.exe (the launcher runs the engine
+    itself), and it keeps the inventory in memory and writes it over inventory.txt. Steam's own cs2.exe
+    doesn't count: it reads neither the inventory nor the mods."""
     try:
-        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cs2.exe"], capture_output=True, text=True).stdout
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True).stdout
     except OSError:
         return False
-    return "cs2.exe" in out.lower()
+    return any(line.split(",")[0].strip('"').lower() == "cs2_gc.exe" for line in out.splitlines())
+
+
+def add_inventory_item(inventory_path, def_index, quality, rarity, attributes, backup_suffix, equips=()):
+    """Append an item to the top-level "items" block of inventory.txt (the file goes on with "account" and
+    "default_equips", so the end of the file is the wrong place), equipped in the (class, slot) pairs of
+    `equips`. Returns the new item id."""
+    text = open(inventory_path, encoding="utf-8").read()
+    start = re.search(r'^"items"\s*\{[^\n]*\n', text, re.M)
+    if not start:
+        text = '"items"\n{\n}\n' + text
+        start = re.search(r'^"items"\s*\{[^\n]*\n', text, re.M)
+    end = re.compile(r"^\}", re.M).search(text, start.end())
+    if not end:
+        raise ValueError(f"{inventory_path}: the \"items\" block isn't closed")
+    ids = [int(x) for x in re.findall(r'^\t"(\d+)"\s*$', text[start.end():end.start()], re.M)]
+    new_id = max(ids, default=0) + 1
+    attrs = "".join(f'\t\t\t"{k}"\t\t"{v}"\n' for k, v in attributes)
+    block = (
+        f'\t"{new_id}"\n\t{{\n'
+        f'\t\t"inventory"\t\t"{new_id}"\n\t\t"def_index"\t\t"{def_index}"\n\t\t"level"\t\t"1"\n'
+        f'\t\t"quality"\t\t"{quality}"\n\t\t"flags"\t\t"0"\n\t\t"origin"\t\t"8"\n\t\t"in_use"\t\t"0"\n'
+        f'\t\t"rarity"\t\t"{rarity}"\n\t\t"attributes"\n\t\t{{\n{attrs}\t\t}}\n'
+    )
+    if equips:
+        block += '\t\t"equipped_state"\n\t\t{\n' + "".join(f'\t\t\t"{c}"\t\t"{s}"\n' for c, s in equips) + "\t\t}\n"
+    block += "\t}\n"
+    backup = inventory_path + backup_suffix
+    if not os.path.exists(backup):
+        shutil.copyfile(inventory_path, backup)
+    with open(inventory_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text[:end.start()] + block + text[end.start():])
+    return new_id
 
 
 def add_kit_item(inventory_path, music_id, log=print):
@@ -183,17 +229,7 @@ def add_kit_item(inventory_path, music_id, log=print):
     if re.search(r'"def_index"\s+"1314"[^}]*"166"\s+"%d"' % music_id, text, re.S):
         log("inventory already has this music kit")
         return
-    ids = [int(x) for x in re.findall(r'^\t"(\d+)"\s*$', text, re.M)]
-    new_id = max(ids, default=0) + 1
-    block = (
-        f'\t"{new_id}"\n\t{{\n'
-        f'\t\t"inventory"\t\t"{new_id}"\n\t\t"def_index"\t\t"1314"\n\t\t"level"\t\t"1"\n'
-        f'\t\t"quality"\t\t"4"\n\t\t"flags"\t\t"0"\n\t\t"origin"\t\t"8"\n\t\t"in_use"\t\t"0"\n'
-        f'\t\t"rarity"\t\t"3"\n\t\t"attributes"\n\t\t{{\n\t\t\t"166"\t\t"{music_id}"\n\t\t}}\n\t}}\n'
-    )
-    end = text.rstrip().rfind("}")
-    shutil.copyfile(inventory_path, inventory_path + ".before_music_mod")
-    open(inventory_path, "w", encoding="utf-8", newline="\n").write(text[:end] + block + text[end:])
+    new_id = add_inventory_item(inventory_path, 1314, 4, 3, [(166, music_id)], ".before_music_mod")
     log(f"added the music kit (music id {music_id}) as item {new_id}, equip it in game "
           "(backup: inventory.txt.before_music_mod)")
 
@@ -314,7 +350,7 @@ def build_mod(args, track, kit, starts, log=print):
 
     if args.add_item:
         if cs2_running():
-            log("cs2.exe is running, not touching inventory.txt (close the game and run again)")
+            log("the game is running, not touching inventory.txt (close the game and run again)")
         else:
             add_kit_item(os.path.join(args.data, "inventory.txt"), kit.music_id, log)
     return mod_dir
@@ -413,7 +449,7 @@ def serve_cutter(args, track, kit, starts):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cs2", required=True)
-    ap.add_argument("--data", required=True, help="cs2_gc data folder (release\\cs2_gc)")
+    ap.add_argument("--data", help="cs2_gc data folder (by default release\\cs2_gc)")
     ap.add_argument("--mp3", required=True, help="the track: mp3, or m4a/wav/wma/ogg/flac (converted with ffmpeg or Windows' codecs)")
     ap.add_argument("--name", required=True, help="the kit's name in game")
     ap.add_argument("--description", default="", help="the kit's description in game")
@@ -427,6 +463,7 @@ def main():
     ap.add_argument("--no-browser", action="store_true", help="with --cutter: just print the address")
     ap.add_argument("--add-item", action="store_true", help="put the kit into inventory.txt (game must be closed)")
     args = ap.parse_args()
+    args.data = os.path.abspath(args.data or default_data())
 
     track = Track(args.mp3)
     print(f"{args.mp3}: {len(track.frames)} frames, {track.sample_rate} Hz stereo, {track.seconds:.2f} s")

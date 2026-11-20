@@ -54,4 +54,16 @@ bool PatchGraffitiPublicKey(std::string_view moduleName, const void *original, c
 
 bool RemoveFile(const std::string &utf8Path);
 
+bool FileExists(const std::string &utf8Path);
+
+// the language the game runs in: -language on the command line, else what Steam set for CS2
+// (appmanifest_730.acf next to the install). Lowercase letters ("russian", "schinese"), empty if unknown
+std::string GameLanguage();
+
+// puts `from` in the place of `to` in one step (a rename), so `to` is never half written
+bool ReplaceWith(const std::string &from, const std::string &to);
+
+// copies `from` over `to`
+bool CopyTo(const std::string &from, const std::string &to);
+
 } // namespace Platform

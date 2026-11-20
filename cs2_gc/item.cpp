@@ -311,6 +311,8 @@ void Item::ToEconItemPreviewDataBlock(CEconItemPreviewDataBlock &block, uint32_t
     // block.set_dropreason(m_desc.dropReason);
 
     std::array<CEconItemPreviewDataBlock_Sticker, MaxStickers> stickers;
+    std::array<int, MaxStickers> placedAt; // "sticker slot N schema": the slot it's placed at, -1 = N
+    placedAt.fill(-1);
     CEconItemPreviewDataBlock_Sticker keychain; // slot 0, the only charm slot
 
     for (const ItemAttribute &attribute : m_desc.attributes)
@@ -495,6 +497,12 @@ void Item::ToEconItemPreviewDataBlock(CEconItemPreviewDataBlock &block, uint32_t
                 }
             }
 
+            uint32_t schemaFirst = FromEnum(AttributeDefIndex::StickerSchema0);
+            if (index >= schemaFirst && index < schemaFirst + MaxStickers)
+            {
+                placedAt[index - schemaFirst] = static_cast<int>(attribute.ValueAs<uint32_t>());
+            }
+
             // anything else does not affect the preview block
             break;
         }
@@ -516,6 +524,6 @@ void Item::ToEconItemPreviewDataBlock(CEconItemPreviewDataBlock &block, uint32_t
 
         CEconItemPreviewDataBlock_Sticker *sticker = block.add_stickers();
         *sticker = source;
-        sticker->set_slot(i);
+        sticker->set_slot(placedAt[i] >= 0 ? static_cast<uint32_t>(placedAt[i]) : static_cast<uint32_t>(i));
     }
 }

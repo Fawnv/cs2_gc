@@ -1,0 +1,9 @@
+"mod"
+{
+	"name"		"Upgrader"
+	"author"		"wr4th"
+	"version"		"1.0"
+	"description"	"The Upgrader tab in the inventory and Upgrade in the skin menu: bet skins on a dearer one."
+	"enabled"	"1"
+	"priority"	"-100"
+}

@@ -28,6 +28,8 @@ WHERE THINGS ARE
   release\cs2_gc.exe              the launcher
   release\cs2_gc\config.txt       settings: ranks, level, mods, the upgrader's prices
   release\cs2_gc\inventory.txt    your inventory (the game changes it)
+  release\cs2_gc\inventory.txt.bak  the inventory as the last start read it
+  release\cs2_gc\mods\             CSForge mods; install a mod's .zip in the editor's Mods tab
   release\cs2_gc\gc_log.txt       the log, after the first start
   release\cs2_gc\editor\          the inventory editor page
 

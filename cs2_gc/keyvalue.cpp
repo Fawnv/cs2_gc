@@ -113,6 +113,10 @@ public:
         {
             m_ptr++;
         }
+        else
+        {
+            m_cutShort = true; // no closing quote
+        }
 
         return { start, static_cast<size_t>(end - start) };
     }
@@ -129,9 +133,19 @@ public:
         m_ptr++;
     }
 
+    // for KeyValueRead::Complete: how many blocks are open, and whether the text ended inside one
+    // (or inside a string) or closed more than it opened
+    void EnterBlock() { m_depth++; }
+    void LeaveBlock() { m_depth--; }
+    bool InBlock() const { return m_depth > 0; }
+    void MarkCutShort() { m_cutShort = true; }
+    bool CutShort() const { return m_cutShort; }
+
 private:
     char *m_ptr;
     char *m_end;
+    int m_depth{};
+    bool m_cutShort{};
 };
 
 KeyValueRead::KeyValueRead(const char *path)
@@ -143,7 +157,7 @@ bool KeyValueRead::MergeToFromFile(const char *path)
 {
     std::vector<size_t> order;
     std::vector<bool> removed;
-    return m_root.ParseFromFile(path, m_storage) && m_root.Dedupe(order, removed);
+    return m_root.ParseFromFile(path, m_storage, &m_cutShort) && m_root.Dedupe(order, removed);
 }
 
 bool KeyValueRead::MergeToFromBuffer(std::string_view name, const char *data, size_t size)
@@ -156,6 +170,11 @@ bool KeyValueRead::MergeToFromBuffer(std::string_view name, const char *data, si
     {
         Platform::Print("Could not parse {}\n", name);
         return false;
+    }
+
+    if (parser.CutShort())
+    {
+        m_cutShort = true;
     }
 
     std::vector<size_t> order;
@@ -193,7 +212,7 @@ static char *LoadFile(const char *path, KeyValueStorage &storage, size_t &size)
     return buffer;
 }
 
-bool KeyValue::ParseFromFile(const char *path, KeyValueStorage &storage)
+bool KeyValue::ParseFromFile(const char *path, KeyValueStorage &storage, bool *cutShort)
 {
     size_t fileSize;
     char *fileData = LoadFile(path, storage, fileSize);
@@ -208,6 +227,11 @@ bool KeyValue::ParseFromFile(const char *path, KeyValueStorage &storage)
     {
         Platform::Print("Could not parse {}\n", path);
         return false;
+    }
+
+    if (cutShort && parser.CutShort())
+    {
+        *cutShort = true;
     }
 
     return true;
@@ -272,6 +296,10 @@ bool KeyValue::Parse(KeyValueParser &parser, std::string_view path, KeyValueStor
     {
         if (!parser.NextToken())
         {
+            if (parser.InBlock())
+            {
+                parser.MarkCutShort(); // the text ends inside a block
+            }
             return true;
         }
 
@@ -305,6 +333,10 @@ bool KeyValue::Parse(KeyValueParser &parser, std::string_view path, KeyValueStor
             break;
 
         case '}':
+            if (!parser.InBlock())
+            {
+                parser.MarkCutShort(); // closes the root: what follows isn't read
+            }
             parser.SkipCharacter();
             return true;
 
@@ -324,12 +356,17 @@ bool KeyValue::Parse(KeyValueParser &parser, std::string_view path, KeyValueStor
             break;
 
         case '{':
+        {
             parser.SkipCharacter();
-            if (!current->Parse(parser, path, storage))
+            parser.EnterBlock();
+            bool parsed = current->Parse(parser, path, storage);
+            parser.LeaveBlock();
+            if (!parsed)
             {
                 return false;
             }
             break;
+        }
 
         default:
             return false;

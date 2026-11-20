@@ -87,8 +87,10 @@
 
 // with "mods" on, CSForge also fixes the game's own Panorama scripts: right now a container with no
 // key to buy (opened during a match) gets a Close button instead of a popup that can't be closed.
-// The fix goes into the current script at every start. 0 = off
+// The fix goes into the current script at every start. 0 = off (the upgrader is a mod now: mods\upgrader,
+// turned off in the inventory editor's Mods tab)
 "panorama_fixes"	"1"
 
-// languages whose resource/csgo_<lang>.txt the mods' localization.txt gets merged into
+// languages whose resource/csgo_<lang>.txt the mods' localization.txt gets merged into, besides the
+// game's own language (-language, or the language Steam set for CS2), which is always added
 "mod_languages"	"english russian"

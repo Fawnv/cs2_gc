@@ -217,8 +217,26 @@ static void Append(std::string &out, const T &value)
     out.append(reinterpret_cast<const char *>(&value), sizeof(T));
 }
 
-bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files)
+bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files, std::string *error)
 {
+    auto fail = [&](std::string reason) {
+        if (error)
+        {
+            *error = std::move(reason);
+        }
+        return false;
+    };
+
+    uint64_t totalData = 0;
+    for (const VpkFile &file : files)
+    {
+        totalData += file.data.size();
+    }
+    if (totalData > UINT32_MAX)
+    {
+        return fail(std::format("{:.1f} GB of files, a vpk holds 4 GB", totalData / 1073741824.0));
+    }
+
     // extension -> folder -> name -> file, the layout the tree is written in
     std::map<std::string, std::map<std::string, std::map<std::string, const VpkFile *>>> tree;
 
@@ -237,7 +255,10 @@ bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files)
         tree[ext][folder][name] = &file;
     }
 
-    std::string treeData, fileData;
+    std::string treeData;
+    uint64_t dataOffset = 0;
+    std::vector<const VpkFile *> order; // the data goes in the tree's order
+    order.reserve(files.size());
     for (const auto &[ext, folders] : tree)
     {
         treeData.append(ext).push_back('\0');
@@ -252,12 +273,13 @@ bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files)
                 entry.crc = Crc32(file->data);
                 entry.preloadBytes = 0;
                 entry.archiveIndex = VpkDirArchive;
-                entry.entryOffset = static_cast<uint32_t>(fileData.size());
+                entry.entryOffset = static_cast<uint32_t>(dataOffset);
                 entry.entryLength = static_cast<uint32_t>(file->data.size());
                 entry.terminator = VpkEntryTerminator;
                 Append(treeData, entry);
 
-                fileData.append(file->data);
+                dataOffset += file->data.size();
+                order.push_back(file);
             }
             treeData.push_back('\0');
         }
@@ -265,24 +287,40 @@ bool VpkWrite(const std::string &dirVpkPath, std::span<const VpkFile> files)
     }
     treeData.push_back('\0');
 
-    std::string out;
-    Append(out, VpkSignature);
-    Append(out, uint32_t{ 2 }); // version
-    Append(out, static_cast<uint32_t>(treeData.size()));
-    Append(out, static_cast<uint32_t>(fileData.size()));
-    Append(out, uint32_t{ 0 }); // archive md5 section
-    Append(out, uint32_t{ 0 }); // other md5 section
-    Append(out, uint32_t{ 0 }); // signature section
-    out.append(treeData);
-    out.append(fileData);
+    std::string header;
+    Append(header, VpkSignature);
+    Append(header, uint32_t{ 2 }); // version
+    Append(header, static_cast<uint32_t>(treeData.size()));
+    Append(header, static_cast<uint32_t>(dataOffset));
+    Append(header, uint32_t{ 0 }); // archive md5 section
+    Append(header, uint32_t{ 0 }); // other md5 section
+    Append(header, uint32_t{ 0 }); // signature section
 
-    FILE *f = Platform::OpenFile(dirVpkPath, "wb");
+    // file by file, not one string of everything: the mods can be hundreds of MB
+    std::string tempPath = dirVpkPath + ".tmp";
+    FILE *f = Platform::OpenFile(tempPath, "wb");
     if (!f)
     {
-        return false;
+        return fail("can't create " + tempPath);
     }
 
-    bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
-    fclose(f);
-    return ok;
+    bool ok = fwrite(header.data(), 1, header.size(), f) == header.size()
+        && fwrite(treeData.data(), 1, treeData.size(), f) == treeData.size();
+    for (const VpkFile *file : order)
+    {
+        ok = ok && (file->data.empty() || fwrite(file->data.data(), 1, file->data.size(), f) == file->data.size());
+    }
+    ok = (fclose(f) == 0) && ok;
+
+    if (!ok)
+    {
+        Platform::RemoveFile(tempPath);
+        return fail("writing failed (disk full?)");
+    }
+    if (!Platform::ReplaceWith(tempPath, dirVpkPath))
+    {
+        Platform::RemoveFile(tempPath);
+        return fail("can't put the new vpk in place of the old one (is it open?)");
+    }
+    return true;
 }

@@ -106,7 +106,7 @@ public:
 private:
     friend class KeyValueRead;
 
-    bool ParseFromFile(const char *path, KeyValueStorage &storage);
+    bool ParseFromFile(const char *path, KeyValueStorage &storage, bool *cutShort = nullptr);
     bool Parse(KeyValueParser &parser, std::string_view path, KeyValueStorage &storage);
     bool Dedupe(std::vector<size_t> &order, std::vector<bool> &removed);
 
@@ -133,6 +133,12 @@ public:
     KeyValueRead(const char *path);
 
     bool Good() const { return m_good; }
+
+    // Good, and the text was whole: every block and string closed, no '}' closing the root. The parser
+    // takes a file that ends early or has a brace too many and drops the rest of it, which a config can
+    // live with; an inventory read like that would lose items.
+    bool Complete() const { return m_good && !m_cutShort; }
+
     const KeyValue &Root() const { return m_root; }
 
     // hacks for the item schema!!!
@@ -145,6 +151,7 @@ private:
     KeyValueStorage m_storage;
     KeyValue m_root;
     bool m_good{};
+    bool m_cutShort{};
 };
 
 class KeyValueWrite

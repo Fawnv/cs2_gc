@@ -127,6 +127,11 @@ enum class AttributeDefIndex : uint32_t
     StickerOffsetX0 = 278,
     StickerOffsetY0 = 279,
 
+    // cs2: "sticker slot N schema", 1 per slot: the weapon's sticker slot the sticker is placed at (its
+    // offsets count from there), when that isn't N. N is only where it's stored: client.dll puts this
+    // value in place of N as the sticker's slot (CEconItemPreviewDataBlock.Sticker.slot)
+    StickerSchema0 = 290,
+
     // cs2: charms
     KeychainId0 = 299,
     KeychainOffsetX0 = 300,

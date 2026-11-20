@@ -1,5 +1,30 @@
 export const PROTOCOL_VERSION = 1;
-export const Command = Object.freeze({ create: 0, modify: 1, destroy: 2, setId: 3, snapshot: 4, protocolInfo: 5, modListRequest: 6, modList: 7, modSet: 8 });
+export const Command = Object.freeze({ create: 0, modify: 1, destroy: 2, setId: 3, snapshot: 4, protocolInfo: 5, modListRequest: 6, modList: 7, modSet: 8,
+  modInstallBegin: 9, modInstallFile: 10, modInstallEnd: 11, modDelete: 12 });
+
+// a command with strings (uint32 length + utf-8), uint32s and bytes, in this order of parts
+function encodeParts(type, parts) {
+  const encoded = parts.map(part => typeof part === 'string' ? new TextEncoder().encode(part) : part);
+  const size = 4 + encoded.reduce((sum, part) => sum + (typeof part === 'number' ? 4 : part.isRaw ? part.bytes.byteLength : 4 + part.byteLength), 0);
+  const buffer = new ArrayBuffer(size);
+  const view = new DataView(buffer);
+  view.setUint32(0, type, true);
+  let at = 4;
+  for (const part of encoded) {
+    if (typeof part === 'number') { view.setUint32(at, part >>> 0, true); at += 4; continue; }
+    const bytes = part.isRaw ? part.bytes : part;
+    if (!part.isRaw) { view.setUint32(at, bytes.byteLength, true); at += 4; }
+    new Uint8Array(buffer, at, bytes.byteLength).set(bytes);
+    at += bytes.byteLength;
+  }
+  return buffer;
+}
+
+// installing a mod: its folder, then each file in pieces (path, first piece of the file, size, bytes), then the end
+export const encodeModInstallBegin = folder => encodeParts(Command.modInstallBegin, [folder]);
+export const encodeModInstallFile = (path, first, bytes) => encodeParts(Command.modInstallFile, [path, first ? 1 : 0, bytes.byteLength, { isRaw: true, bytes }]);
+export const encodeModInstallEnd = commit => encodeParts(Command.modInstallEnd, [commit ? 1 : 0]);
+export const encodeModDelete = folder => encodeParts(Command.modDelete, [folder]);
 
 // CSForge's Mods tab: a list request, and enabled/priority for one mod (the GC answers both with modList)
 export function encodeModListRequest() {
@@ -141,6 +166,12 @@ export function decodeMessage(buffer) {
         offset += length;
         return value;
       };
+      const problems = () => {
+        const list = [];
+        const listed = count(8);
+        for (let j = 0; j < listed; j++) list.push({ error: uint32() !== 0, text: string() });
+        return list;
+      };
       const flags = uint32();
       const message = string();
       const mods = [];
@@ -158,9 +189,12 @@ export function decodeMessage(buffer) {
         mod.lost = [];
         const listed = count(8);
         for (let j = 0; j < listed; j++) mod.lost.push({ path: string(), winner: string() });
+        mod.problemCount = uint32();
+        mod.problems = problems();
         mods.push(mod);
       }
-      commands.push({ type, modsOn: Boolean(flags & 1), loaded: Boolean(flags & 2), message, mods });
+      const general = problems();
+      commands.push({ type, modsOn: Boolean(flags & 1), loaded: Boolean(flags & 2), message, mods, general });
       if (remaining()) throw new Error('The mod list must be a separate message.');
     } else {
       throw new Error(`Unexpected inventory command ${type}.`);

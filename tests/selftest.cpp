@@ -139,11 +139,64 @@ int wmain(int argc, wchar_t **argv)
         return loaded ? 0 : 1;
     }
 
+    // --case <def index> <openings>: what a case gives, with the mods built the way the game builds
+    // them (config "mods" "1"), to check a mod's case without the game
+    if (argc >= 6 && !wcscmp(argv[3], L"--case"))
+    {
+        if (GetConfig().m_mods)
+        {
+            ModLoader::Build();
+        }
+
+        ItemSchema schema;
+        CaseOpening caseOpening{ schema };
+        uint32_t def = static_cast<uint32_t>(_wtoi(argv[4]));
+        int openings = _wtoi(argv[5]);
+        ItemDefIndex defIndex = ToEnum<ItemDefIndex>(def);
+        ItemDesc crate{};
+        bool known = schema.GetItemDesc(defIndex, ItemOriginBaseItem, UnacknowledgedInvalid, crate);
+        printf("case %u: %s, %s\n", def, known ? "an item of the schema" : "NOT in the schema",
+            schema.GetCrateLootList(defIndex) ? "has a loot list" : "NO loot list");
+
+        std::map<std::array<uint32_t, 4>, int> counts; // def, paint, quality, rarity
+        int failed = 0;
+        for (int i = 0; i < openings; i++)
+        {
+            ItemDesc desc{};
+            if (!caseOpening.SelectItemFromCrate(defIndex, desc))
+            {
+                failed++;
+                continue;
+            }
+
+            uint32_t paint = 0;
+            for (const ItemAttribute &attribute : desc.attributes)
+            {
+                if (attribute.DefIndex() == AttributeDefIndex::TexturePrefab)
+                {
+                    paint = static_cast<uint32_t>(attribute.ValueAs<float>());
+                }
+            }
+            counts[{ FromEnum(desc.defIndex), paint, static_cast<uint32_t>(desc.quality), static_cast<uint32_t>(desc.rarity) }]++;
+        }
+
+        for (const auto &[key, count] : counts)
+        {
+            printf("  def %u paint %u quality %u rarity %u: %d (%.1f%%)\n", key[0], key[1], key[2], key[3], count, 100.0 * count / openings);
+        }
+        printf("%d openings, %d failed\n", openings, failed);
+        return (known && !failed && !counts.empty()) ? 0 : 1;
+    }
+
     // --serve <seconds>: run only the inventory editor server (http + websocket on
     // 127.0.0.1:13001) on top of <data dir>\inventory.txt, to test the editor page
     if (argc >= 5 && !wcscmp(argv[3], L"--serve"))
     {
         int seconds = _wtoi(argv[4]);
+        if (GetConfig().m_mods)
+        {
+            ModLoader::Build(); // as the game does at its start, so the Mods tab has this "run" to show
+        }
         Inventory inventory{ 76561197960287930ull };
         printf("serving the inventory editor for %d s\n", seconds);
         fflush(stdout);
@@ -993,6 +1046,11 @@ int wmain(int argc, wchar_t **argv)
             item(3, 1209, 4, 3, "\t\t\t\"113\"\t\t\"8554\"\n");
             item(4, 7, 4, 3, "\t\t\t\"6\"\t\t\"44\"\n\t\t\t\"7\"\t\t\"321\"\n\t\t\t\"8\"\t\t\"0.2\"\n");
             item(5, 5115, 4, 1, "");
+            for (int sticker = 6; sticker <= 11; sticker++)
+            {
+                item(sticker, 1209, 4, 3, sticker % 2 ? "\t\t\t\"113\"\t\t\"8554\"\n" : "\t\t\t\"113\"\t\t\"8557\"\n");
+            }
+            item(12, 4609, 4, 3, "\t\t\t\"113\"\t\t\"8554\"\n"); // a patch, no wear
             fprintf(f, "}\n");
             fclose(f);
         }
@@ -1078,6 +1136,128 @@ int wmain(int argc, wchar_t **argv)
         CHECK(inspected && block.defindex() == 7 && block.paintindex() == 44 && block.paintseed() == 321
                 && block.paintwear() == std::bit_cast<uint32_t>(0.2f) && !inventory.PreviewDataBlock(id(99), missing),
             "inspect: AK-47 paint 44 seed 321, exact float 0.2 as bits; unknown items have no data");
+
+        // stickers on the AK-47 (4), all placed at slot 3: the first is stored there, the others in free
+        // slots with "sticker slot N schema" 3, none over another; a sixth is refused and kept (5 at most)
+        {
+            auto slotAttribute = [](AttributeDefIndex first, uint32_t slot, uint32_t stride) {
+                return ToEnum<AttributeDefIndex>(FromEnum(first) + slot * stride);
+            };
+            for (uint32_t sticker = 6; sticker <= 11; sticker++)
+            {
+                CMsgApplySticker apply;
+                apply.set_sticker_item_id(id(sticker));
+                apply.set_item_item_id(id(4));
+                apply.set_sticker_slot(3);
+                apply.set_sticker_offset_x(0.01f * sticker);
+                apply.set_sticker_offset_y(0.0f);
+                inventory.ApplySticker(apply);
+            }
+            auto now = items(inventory);
+            const CSOEconItem &ak = now[id(4)];
+            std::vector<uint32_t> kits;
+            bool offsetsKept = true;
+            for (uint32_t slot = 0; slot < 6; slot++)
+            {
+                kits.push_back(u32(ak, slotAttribute(AttributeDefIndex::StickerId0, slot, 4)));
+            }
+            // slot 3 got sticker 6, then 7, 8, 9, 10 went into 0, 1, 2, 4 with their own offsets
+            uint32_t expectedSticker[] = { 7, 8, 9, 6, 10 };
+            for (uint32_t slot = 0; slot < 5; slot++)
+            {
+                offsetsKept &= u32(ak, slotAttribute(AttributeDefIndex::StickerOffsetX0, slot, 2)) == std::bit_cast<uint32_t>(0.01f * expectedSticker[slot]);
+            }
+            bool schemas = true;
+            for (uint32_t slot : { 0u, 1u, 2u, 4u })
+            {
+                schemas &= u32(ak, slotAttribute(AttributeDefIndex::StickerSchema0, slot, 1)) == 3;
+            }
+            bool storedAtThree = true;
+            for (const CSOEconItemAttribute &a : ak.attribute())
+            {
+                storedAtThree &= a.def_index() != FromEnum(AttributeDefIndex::StickerSchema0) + 3;
+            }
+            CEconItemPreviewDataBlock akBlock;
+            inventory.PreviewDataBlock(id(4), akBlock);
+            bool previewAtThree = akBlock.stickers_size() == 5;
+            for (const auto &sticker : akBlock.stickers())
+            {
+                previewAtThree &= sticker.slot() == 3;
+            }
+            CHECK(kits[0] && kits[1] && kits[2] && kits[3] == 8557 && kits[4] && !kits[5] && offsetsKept && schemas && storedAtThree
+                    && previewAtThree && !now.contains(id(6)) && !now.contains(id(10)) && now.contains(id(11)),
+                "6 stickers placed at slot 3: 5 stored in slots 0-4 with their offsets, the moved ones with schema 3 (inspect says 3), the 6th kept (%u %u %u %u %u %u)",
+                kits[0], kits[1], kits[2], kits[3], kits[4], kits[5]);
+        }
+
+        // scraping: the popup sends the wear to scrape the sticker to in sticker_wear (0..1 in the
+        // sticker's steps), 111 scrapes it off completely; patches have no wear and go with RemovePatch
+        {
+            auto slotAttribute = [](AttributeDefIndex first, uint32_t slot, uint32_t stride) {
+                return ToEnum<AttributeDefIndex>(FromEnum(first) + slot * stride);
+            };
+            auto wear = [&](uint32_t slot) {
+                return std::bit_cast<float>(u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerWear0, slot, 4)));
+            };
+
+            // cs2 sends the current wear in sticker_wear and the wear to scrape to in sticker_wear_target
+            CMsgApplySticker scrape;
+            scrape.set_item_item_id(id(4));
+            scrape.set_sticker_slot(3);
+            scrape.set_sticker_wear(0.0f);
+            scrape.set_sticker_wear_target(0.4444f);
+            inventory.ScrapeSticker(scrape);
+            CHECK(wear(3) == 0.4444f
+                    && u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 3, 4)) == 8557,
+                "scrape to target wear 0.4444: the sticker stays and its wear is what the client asked for");
+
+            // 1.0 is extreme wear (a faint sticker), not removal
+            scrape.set_sticker_slot(0);
+            scrape.set_sticker_wear(0.0f);
+            scrape.set_sticker_wear_target(1.0f);
+            inventory.ScrapeSticker(scrape);
+            CHECK(wear(0) == 1.0f
+                    && u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 0, 4)) == 8554,
+                "scrape to target wear 1.0: extreme wear, the sticker is still there");
+
+            // the next scrape on a sticker already at extreme wear takes it off (111 clamped to 1.0)
+            scrape.set_sticker_slot(0);
+            scrape.set_sticker_wear(1.0f);
+            scrape.set_sticker_wear_target(1.0f);
+            InventoryChangeMessages extremeGone = inventory.ScrapeSticker(scrape);
+            CHECK(extremeGone.notification.request() == k_EGCItemCustomizationNotification_RemoveSticker
+                    && !u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 0, 4)),
+                "another scrape at extreme wear scrapes the sticker off");
+
+            // 111 ("WearItemSticker(item, slot, 111)") scrapes it off
+            scrape.set_sticker_slot(3);
+            scrape.set_sticker_wear(0.4444f);
+            scrape.set_sticker_wear_target(111.0f);
+            InventoryChangeMessages removed = inventory.ScrapeSticker(scrape);
+            auto afterScrape = items(inventory);
+            CHECK(removed.notification.request() == k_EGCItemCustomizationNotification_RemoveSticker
+                    && !u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 3, 4))
+                    && !u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerWear0, 3, 4))
+                    && u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 1, 4)) != 0,
+                "scrape with 111: the sticker is gone (RemoveSticker), the others stay");
+
+            // patches have no wear: remove_patch sends 0 and the patch goes
+            CMsgApplySticker patch;
+            patch.set_sticker_item_id(id(12));
+            patch.set_item_item_id(id(4));
+            patch.set_sticker_slot(3);
+            inventory.ApplySticker(patch);
+            CHECK(u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 3, 4)) == 8554
+                    && !u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerWear0, 3, 4)),
+                "a patch is stored without a wear attribute");
+            scrape.set_sticker_slot(3);
+            scrape.set_sticker_wear(0.0f);
+            scrape.set_sticker_wear_target(0.0f);
+            InventoryChangeMessages patchGone = inventory.ScrapeSticker(scrape);
+            CHECK(patchGone.notification.request() == k_EGCItemCustomizationNotification_RemovePatch
+                    && !u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 3, 4)),
+                "removing a patch (wear 0) scrapes it off with RemovePatch");
+        }
 
         // viewer pass: coin + 3 souvenir tokens, a token is a souvenir package
         before = items(inventory);
@@ -1383,18 +1563,18 @@ int wmain(int argc, wchar_t **argv)
         std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods") }, ec);
 
         write("mods\\low\\mod.txt", "\"mod\" { \"name\" \"Low\" \"priority\" \"0\" }");
-        write("mods\\low\\files\\sounds\\cs2gc_test\\Shared.vsnd_c", "low");
-        write("mods\\low\\files\\sounds\\cs2gc_test\\only_low.vsnd_c", std::string(70000, 'L'));
+        write("mods\\low\\files\\sounds\\cs2gc_test\\Shared.txt", "low");
+        write("mods\\low\\files\\sounds\\cs2gc_test\\only_low.txt", std::string(70000, 'L'));
         write("mods\\low\\items_game.txt", "\"items_game\" { \"paint_kits\" { \"20001\" { \"name\" \"low_kit\" } } \"paint_kits_rarity\" { \"low_kit\" \"ancient\" } }");
         write("mods\\low\\localization.txt", "\"lang\" { \"Tokens\" { \"PaintKit_aq_oiled_Tag\" \"Low override\" \"cs2gc_mod_token\" \"cs2gc low marker\" } }");
 
         write("mods\\high\\mod.txt", "\"mod\" { \"name\" \"High\" \"priority\" \"10\" \"version\" \"1.2\" }");
-        write("mods\\high\\files\\sounds\\cs2gc_test\\shared.vsnd_c", "high");
+        write("mods\\high\\files\\sounds\\cs2gc_test\\shared.txt", "high");
         write("mods\\high\\items_game.txt", "\"items_game\" { \"paint_kits\" { \"20001\" { \"name\" \"high_dup\" } \"20002\" { \"name\" \"high_kit\" } } }");
         write("mods\\high\\localization_russian.txt", "\"lang\" { \"Tokens\" { \"cs2gc_mod_token\" \"cs2gc high marker\" } }");
 
         write("mods\\off\\mod.txt", "\"mod\" { \"name\" \"Off\" \"enabled\" \"0\" \"priority\" \"99\" }");
-        write("mods\\off\\files\\sounds\\cs2gc_test\\shared.vsnd_c", "off");
+        write("mods\\off\\files\\sounds\\cs2gc_test\\shared.txt", "off");
 
         std::vector<ModLoader::ModInfo> mods = ModLoader::ListMods();
         CHECK(mods.size() == 3 && mods[0].folder == "low" && mods[1].folder == "high" && mods[2].folder == "off" && !mods[2].enabled
@@ -1405,8 +1585,8 @@ int wmain(int argc, wchar_t **argv)
         const std::string &vpk = ModLoader::BuiltVpkPath();
 
         std::vector<char> shared, onlyLow, items, russian, english;
-        VpkReadFile(vpk, "sounds/cs2gc_test/shared.vsnd_c", shared);
-        VpkReadFile(vpk, "sounds/cs2gc_test/only_low.vsnd_c", onlyLow);
+        VpkReadFile(vpk, "sounds/cs2gc_test/shared.txt", shared);
+        VpkReadFile(vpk, "sounds/cs2gc_test/only_low.txt", onlyLow);
         VpkReadFile(vpk, "scripts/items/items_game.txt", items);
         VpkReadFile(vpk, "resource/csgo_russian.txt", russian);
         VpkReadFile(vpk, "resource/csgo_english.txt", english);
@@ -1444,6 +1624,114 @@ int wmain(int argc, wchar_t **argv)
                 && low.lost.size() == 1 && low.lost[0].second == "high" && !low.changed && !status(statuses, "high").changed,
             "Mods tab: files, items/texts, low's shared.vsnd_c lost to high, nothing changed since the build");
 
+        // items_game_override.txt: a deep merge into what's there
+        {
+            std::string deep = "\"r\" { \"a\" { \"x\" { \"k\" \"1\" \"m\" \"2\" } } \"a\" { \"y\" { \"k\" \"3\" } } \"s\" \"t\" }";
+            ModLoader::MergeReport deepReport;
+            std::string deepError;
+            bool deepMerged = ModLoader::MergeSections(deep,
+                "\"r\" { \"a\" { \"y\" { \"k\" \"9\" \"n\" \"new\" } \"z\" { \"q\" \"1\" } \"x\" \"str\" } \"b\" { \"c\" \"d\" } }",
+                ModLoader::MergeMode::DeepOverride, deepReport, deepError);
+            KeyValueStorage deepStorage;
+            KeyValueRead deepRead{ [&] {
+                std::string path = Platform::DataPath("selftest_deep.txt");
+                FILE *f = Platform::OpenFile(path, "wb");
+                fwrite(deep.data(), 1, deep.size(), f);
+                fclose(f);
+                return path;
+            }().c_str() };
+            const KeyValue *r = deepRead.Root().GetSubkey("r");
+            const KeyValue *a = r ? r->GetSubkey("a") : nullptr;
+            const KeyValue *y = a ? a->GetSubkey("y") : nullptr;
+            const KeyValue *x = a ? a->GetSubkey("x") : nullptr;
+            CHECK(deepMerged && y && y->GetString("k") == "9" && y->GetString("n") == "new" && a->GetSubkey("z") && x && x->GetString("m") == "2"
+                    && r->GetSubkey("b") && r->GetString("s") == "t" && deepReport.overridden.size() == 1 && deepReport.skipped.size() == 1
+                    && deepReport.added == 3,
+                "items_game_override.txt: a text replaced at depth, a key and a block added, a block in place of a text skipped, a new section (%s)",
+                deepMerged ? "merged" : deepError.c_str());
+            Platform::RemoveFile(Platform::DataPath("selftest_deep.txt"));
+        }
+
+        // the game's language gets the mods' texts even when the config doesn't list it
+        {
+            std::string language = Platform::GameLanguage();
+            const auto &languages = GetConfig().m_modLanguages;
+            CHECK(!language.empty() && std::find(languages.begin(), languages.end(), language) != languages.end(),
+                "the game's language is '%s' (Steam's appmanifest_730.acf), the mods' texts go into it", language.c_str());
+        }
+
+        // a *_c that isn't a compiled game file stays out of the vpk
+        {
+            write("mods\\junk\\files\\sounds\\cs2gc_test\\junk.vsnd_c", "not a resource at all");
+            std::string resource(48, '\0');
+            uint32_t header[] = { 48, 12 | (1u << 16), 8, 1 };
+            memcpy(resource.data(), header, sizeof(header));
+            memcpy(resource.data() + 16, "DATA", 4);
+            uint32_t block[] = { 8, 20 };
+            memcpy(resource.data() + 20, block, sizeof(block));
+            write("mods\\junk\\files\\sounds\\cs2gc_test\\good.vsnd_c", resource);
+            ModLoader::Build();
+            std::vector<char> junk, good;
+            bool junkIn = VpkReadFile(ModLoader::BuiltVpkPath(), "sounds/cs2gc_test/junk.vsnd_c", junk);
+            bool goodIn = VpkReadFile(ModLoader::BuiltVpkPath(), "sounds/cs2gc_test/good.vsnd_c", good);
+            ModLoader::ModStatus junkMod = status(ModLoader::ModStatuses(), "junk");
+            CHECK(!junkIn && goodIn && junkMod.problems.size() == 1 && junkMod.problems[0].error,
+                "a .vsnd_c that is text is left out with an error, a well formed one goes in (%s)",
+                junkMod.problems.empty() ? "no problem" : junkMod.problems[0].text.c_str());
+            std::error_code junkEc;
+            std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods\\junk") }, junkEc);
+        }
+
+        // panorama.txt: code into a game script before an anchor
+        {
+            write("mods\\ui\\mod.txt", "\"mod\" { \"name\" \"UI\" }");
+            write("mods\\ui\\panorama.txt", "\"panorama\" { \"1\" { \"file\" \"panorama/scripts/mainmenu.vts_c\" \"anchor\" \"anchor.js\" \"code\" \"code.js\" }"
+                                             " \"2\" { \"file\" \"panorama/scripts/mainmenu.vts_c\" \"anchor\" \"missing.js\" \"code\" \"code.js\" }"
+                                             " \"3\" { \"file\" \"panorama/scripts/mainmenu.vts_c\" \"anchor\" \"..\\\\low\\\\mod.txt\" \"code\" \"code.js\" } }");
+            write("mods\\ui\\anchor.js", "var MainMenu;\n");
+            write("mods\\ui\\code.js", "/* cs2gc mod patch */\n");
+            ModLoader::Build();
+            std::vector<char> menu;
+            VpkReadFile(ModLoader::BuiltVpkPath(), "panorama/scripts/mainmenu.vts_c", menu);
+            std::string_view menuText{ menu.data(), menu.size() };
+            size_t patchAt = menuText.find("/* cs2gc mod patch */\nvar MainMenu;");
+            ModLoader::ModStatus ui = status(ModLoader::ModStatuses(), "ui");
+            CHECK(patchAt != std::string_view::npos && ui.problems.size() == 2 && ui.problems[0].error,
+                "panorama.txt: the code is in mainmenu.vts_c in front of its anchor, a missing file and a path out of the mod are errors (%zu problems)",
+                ui.problems.size());
+            std::error_code uiEc;
+            std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods\\ui") }, uiEc);
+        }
+
+        // what went wrong for a mod is on the tab too, not only in gc_log.txt
+        ModLoader::ModStatus high = status(statuses, "high");
+        CHECK(low.problems.empty() && high.problems.size() == 1 && !high.problems[0].error
+                && high.problems[0].text.find("paint_kits/20001") != std::string::npos
+                && high.problems[0].text.find("the mod low") != std::string::npos,
+            "Mods tab: high's duplicate kit is its problem, naming who has the id (%s)",
+            high.problems.empty() ? "none" : high.problems[0].text.c_str());
+
+        write("mods\\broken\\mod.txt", "this isn't a mod.txt {");
+        write("mods\\broken\\items_game.txt", "\"items_game\" { \"paint_kits\" { \"20003\" { \"name\" \"never_closed\" }");
+        write("mods\\broken\\localization.txt", "\"lang\" { \"Tokens\" { \"PaintKit_aq_oiled_Tag\" { \"a block\" \"where a text is\" } \"1\" { } } }");
+        ModLoader::Build();
+        ModLoader::ModStatus broken = status(ModLoader::ModStatuses(), "broken");
+        size_t brokenErrors = 0, brokenWarnings = 0;
+        for (const ModLoader::ModProblem &problem : broken.problems)
+        {
+            (problem.error ? brokenErrors : brokenWarnings)++;
+        }
+        CHECK(brokenErrors >= 1 && brokenWarnings >= 1 && status(ModLoader::ModStatuses(), "high").problems.size() == 1,
+            "Mods tab: a mod with a broken mod.txt and items_game.txt gets %zu errors and %zu warnings, the others keep theirs",
+            brokenErrors, brokenWarnings);
+        for (const ModLoader::ModProblem &problem : broken.problems)
+        {
+            printf("       %s: %s\n", problem.error ? "error" : "warning", problem.text.c_str());
+        }
+        std::error_code brokenEc;
+        std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods\\broken") }, brokenEc);
+        ModLoader::Build();
+
         write("mods\\low\\mod.txt", "// keep me\n\"mod\"\n{\n\t\"name\"\t\"Low\"\n\t\"priority\"\t\"0\"\n}\n");
         std::string error;
         bool saved = ModLoader::SetModState("low", false, 7, error);
@@ -1465,6 +1753,65 @@ int wmain(int argc, wchar_t **argv)
         CHECK(!ModLoader::SetModState("..\\..\\evil", true, 0, error) && !ModLoader::SetModState("_build", true, 0, error),
             "Mods tab: only real mod folders can be written (%s)", error.c_str());
 
+        // installing from the Mods tab: the page sends the archive's files in pieces
+        {
+            std::string summary, installError;
+            bool begun = ModLoader::InstallBegin("New mod-1.0", installError);
+            bool wrote = begun && ModLoader::InstallWrite("mod.txt", true, "\"mod\" { \"name\" \"New\" }", 22, installError)
+                && ModLoader::InstallWrite("files/sounds/t/a.vsnd_c", true, "abc", 3, installError)
+                && ModLoader::InstallWrite("files/sounds/t/a.vsnd_c", false, "def", 3, installError);
+            bool installed = wrote && ModLoader::InstallEnd(true, summary, installError);
+            std::string piece;
+            {
+                FILE *f = Platform::OpenFile(Platform::DataPath("mods\\New mod-1.0\\files\\sounds\\t\\a.vsnd_c"), "rb");
+                char buffer[16]{};
+                if (f)
+                {
+                    piece.assign(buffer, fread(buffer, 1, sizeof(buffer), f));
+                    fclose(f);
+                }
+            }
+            std::vector<ModLoader::ModInfo> listed = ModLoader::ListMods();
+            CHECK(installed && piece == "abcdef" && std::any_of(listed.begin(), listed.end(), [](const ModLoader::ModInfo &m) { return m.folder == "New mod-1.0" && m.name == "New"; })
+                    && !std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\_install") }),
+                "install: the pieces make the files, the mod is listed, nothing left in _install (%s)", installed ? summary.c_str() : installError.c_str());
+
+            // replacing it: the old one goes to the trash
+            ModLoader::InstallBegin("New mod-1.0", installError);
+            ModLoader::InstallWrite("mod.txt", true, "\"mod\" { \"name\" \"Newer\" }", 24, installError);
+            bool replaced = ModLoader::InstallEnd(true, summary, installError);
+            CHECK(replaced && std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\_trash\\New mod-1.0\\files") })
+                    && !std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\New mod-1.0\\files") }),
+                "install over a mod of the same name: the old one is in mods\\_trash");
+
+            const char *badPaths[] = { "../evil.txt", "files/../../evil.txt", "C:/evil.txt", "files/a:stream", "files\\a.txt", "/abs.txt", "files//a", "files/aux. " };
+            int refused = 0;
+            ModLoader::InstallBegin("pathtest", installError);
+            for (const char *bad : badPaths)
+            {
+                refused += ModLoader::InstallWrite(bad, true, "x", 1, installError) ? 0 : 1;
+            }
+            ModLoader::InstallEnd(false, summary, installError);
+            const char *badFolders[] = { "..", "_build", ".hidden", "a/b", "a\\b", "", "c:", "end." };
+            int refusedFolders = 0;
+            for (const char *bad : badFolders)
+            {
+                refusedFolders += ModLoader::InstallBegin(bad, installError) ? 0 : 1;
+            }
+            ModLoader::InstallEnd(false, summary, installError);
+            CHECK(refused == static_cast<int>(std::size(badPaths)) && refusedFolders == static_cast<int>(std::size(badFolders))
+                    && !std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\pathtest") })
+                    && !std::filesystem::exists(std::filesystem::path{ Platform::DataPath("evil.txt") }),
+                "install: %d of %zu bad paths and %d of %zu bad folder names refused, a stopped install leaves nothing",
+                refused, std::size(badPaths), refusedFolders, std::size(badFolders));
+
+            bool deleted = ModLoader::DeleteMod("New mod-1.0", installError);
+            CHECK(deleted && !std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\New mod-1.0") })
+                    && std::filesystem::exists(std::filesystem::path{ Platform::DataPath("mods\\_trash\\New mod-1.0\\mod.txt") })
+                    && !ModLoader::DeleteMod("_trash", installError) && !ModLoader::DeleteMod("..", installError),
+                "delete: the mod goes to mods\\_trash, only mod folders can be deleted");
+        }
+
         std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods") }, ec);
     }
 
@@ -1474,7 +1821,6 @@ int wmain(int argc, wchar_t **argv)
         std::string gameVpk = Platform::GamePath("pak01_dir.vpk");
         std::vector<char> original;
         bool read = VpkReadFile(gameVpk, Script, original);
-        size_t targets = ModLoader::BuildUpgraderCatalog(nullptr); // by rarity: no download in a test
         std::vector<VpkFile> out;
         size_t applied = ModLoader::ApplyPanoramaFixes(gameVpk, out);
         auto fixed = [&](std::string_view path) -> const VpkFile * {
@@ -1530,7 +1876,7 @@ int wmain(int argc, wchar_t **argv)
         }
         bool sameAround = newText.size() > oldText.size() && newText.ends_with(oldText.substr(insertedAt))
             && newText.substr(insertedAt, newText.size() - oldText.size()).find("csgcInMatch") != std::string_view::npos;
-        CHECK(read && applied == 3 && out.size() == 3 && fixed(Script) && after.size() == before.size()
+        CHECK(read && applied == 1 && out.size() == 1 && fixed(Script) && after.size() == before.size()
                 && after.contains("STAT") && after["STAT"] == before["STAT"] && after["RED2"] == before["RED2"] && sameAround
                 && newText.find("#SFUI_InvError_OpenCrate_PauseMenu") != std::string_view::npos,
             "case popup: Close and the in-match message go into the game's current script, the rest of the resource intact");
@@ -1539,6 +1885,38 @@ int wmain(int argc, wchar_t **argv)
         std::string error;
         CHECK(!ModLoader::PatchResourceText(copy, "no such anchor in the script", "x", error) && copy == originalFile,
             "an anchor the game's script doesn't have leaves it alone (%s)", error.c_str());
+
+        // the upgrader is the mod mods\upgrader that ships with cs2_gc: built from the repo the way the
+        // game builds the mods (its catalog by rarity: "upgrader_prices" "off", no download in a test)
+        std::error_code upgraderEc;
+        const std::filesystem::path upgraderMod{ Platform::DataPath("mods\\upgrader") };
+        std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods") }, upgraderEc);
+        std::filesystem::create_directories(upgraderMod.parent_path(), upgraderEc);
+        std::filesystem::copy(std::filesystem::path{ CS2GC_SOURCE_DIR } / "mods" / "upgrader", upgraderMod,
+            std::filesystem::copy_options::recursive, upgraderEc);
+        bool upgraderBuilt = ModLoader::Build();
+        size_t targets = ModLoader::UpgraderCatalog().size();
+        for (std::string_view path : { "panorama/scripts/common/item_context_entries.vts_c", "panorama/scripts/mainmenu_inventory.vts_c" })
+        {
+            std::vector<char> data;
+            if (VpkReadFile(ModLoader::BuiltVpkPath(), path, data))
+            {
+                out.push_back({ std::string{ path }, std::string{ data.begin(), data.end() } });
+            }
+        }
+        auto upgraderProblems = [] {
+            for (const ModLoader::ModStatus &mod : ModLoader::ModStatuses())
+            {
+                if (mod.info.folder == "upgrader")
+                {
+                    return mod.problems;
+                }
+            }
+            return std::vector<ModLoader::ModProblem>{ { true, "not listed" } };
+        };
+        std::vector<ModLoader::ModProblem> problems = upgraderProblems();
+        CHECK(!upgraderEc && upgraderBuilt && problems.empty(), "mods\\upgrader from the repo builds without problems (%s)",
+            upgraderEc ? upgraderEc.message().c_str() : problems.empty() ? "none" : problems[0].text.c_str());
 
         // the upgrader: the menu entry and the window, with the catalog in; the scripts go to
         // <data>\panorama_fix_*.js so node --check can look at them
@@ -1583,13 +1961,49 @@ int wmain(int argc, wchar_t **argv)
         }
         CHECK(targets > 1500 && targets == catalog.size() && knives > 300 && !bad
                 && menu.find("name: 'csgc_upgrade'") != std::string::npos && menu.find("name: 'tradeup_add'") != std::string::npos
-                && window.find("var CsgcUpgrader") != std::string::npos && window.find("@CATALOG@") == std::string::npos
+                && window.find("var CsgcUpgrader") != std::string::npos && window.find("@csforge:") == std::string::npos
+                && window.find("R\"JS(") == std::string::npos && window.find(")JS\"") == std::string::npos
                 && window.find(std::format("{},{},{},", catalog[0].defIndex, catalog[0].paintKit, catalog[0].tier)) != std::string::npos
-                && window.find("@CURRENCY@") == std::string::npos && window.find("@PRICE_TIME@") == std::string::npos
+                && window.find("const PRICE_TIME = 0;") != std::string::npos
                 && inventoryScript.find("CsgcUpgrader.Install($.GetContextPanel(), _m_elInventoryMain, NavigateToTab);") != std::string::npos
                 && inventoryScript.find("_InitMarketLink();") != std::string::npos,
             "upgrader: %zu targets (%zu knives), Upgrade in the skin menu, the Upgrader tab in the inventory script",
             targets, knives);
+
+        // a copy of the mod made for another version of cs2_gc's upgrader: nothing of it goes in
+        {
+            std::string panorama;
+            std::string panoramaPath = Platform::DataPath("mods\\upgrader\\panorama.txt");
+            if (FILE *f = Platform::OpenFile(panoramaPath, "rb"))
+            {
+                char buffer[4096];
+                size_t got;
+                while ((got = fread(buffer, 1, sizeof(buffer), f)) > 0)
+                {
+                    panorama.append(buffer, got);
+                }
+                fclose(f);
+            }
+            size_t versionAt = panorama.find("\"upgrader 1\"");
+            if (versionAt != std::string::npos)
+            {
+                panorama.replace(versionAt, 12, "\"upgrader 99\"");
+            }
+            if (FILE *f = Platform::OpenFile(panoramaPath, "wb"))
+            {
+                fwrite(panorama.data(), 1, panorama.size(), f);
+                fclose(f);
+            }
+            ModLoader::Build();
+            std::vector<char> menuData;
+            bool menuIn = VpkReadFile(ModLoader::BuiltVpkPath(), "panorama/scripts/common/item_context_entries.vts_c", menuData);
+            std::vector<ModLoader::ModProblem> versionProblems = upgraderProblems();
+            CHECK(versionAt != std::string::npos && !menuIn && ModLoader::UpgraderCatalog().empty() && versionProblems.size() == 1
+                    && versionProblems[0].error && versionProblems[0].text.find("upgrader 99, this cs2_gc has upgrader 1") != std::string::npos,
+                "an upgrader mod for another version: an error, no menu entry, no catalog (%s)",
+                versionProblems.empty() ? "no problem" : versionProblems[0].text.c_str());
+        }
+        std::filesystem::remove_all(std::filesystem::path{ Platform::DataPath("mods") }, upgraderEc);
     }
 
     printf("[upgrader prices]\n");
@@ -1911,6 +2325,93 @@ int wmain(int argc, wchar_t **argv)
             }
         }
         CHECK(casketKills == 0 && medalKills == 1, "on load the storage unit loses its StatTrak counter, a medal keeps its own (%d, %d)", casketKills, medalKills);
+    }
+
+    printf("[inventory file: damage and saving]\n");
+    {
+        constexpr uint64_t SteamId = 76561197960287930ull;
+        const std::string path = Platform::DataPath("inventory.txt");
+        auto write = [](const std::string &to, const std::string &text) {
+            FILE *f = Platform::OpenFile(to, "wb");
+            fwrite(text.data(), 1, text.size(), f);
+            fclose(f);
+        };
+        auto readAll = [](const std::string &from) {
+            std::string text;
+            FILE *f = Platform::OpenFile(from, "rb");
+            if (f)
+            {
+                char buffer[4096];
+                size_t read;
+                while ((read = fread(buffer, 1, sizeof(buffer), f)) > 0)
+                {
+                    text.append(buffer, read);
+                }
+                fclose(f);
+            }
+            return text;
+        };
+
+        const std::string whole = "\"items\"\n{\n"
+                                  "\t\"1\"\n\t{\n\t\t\"inventory\"\t\t\"1\"\n\t\t\"def_index\"\t\t\"7\"\n\t\t\"quality\"\t\t\"4\"\n\t\t\"rarity\"\t\t\"1\"\n\t}\n"
+                                  "\t\"2\"\n\t{\n\t\t\"inventory\"\t\t\"2\"\n\t\t\"def_index\"\t\t\"9\"\n\t\t\"quality\"\t\t\"4\"\n\t\t\"rarity\"\t\t\"1\"\n\t}\n"
+                                  "}\n\"account\"\n{\n\t\"player_level\"\t\t\"7\"\n}\n";
+
+        // the parser reads all of these without an error and drops what it can't place: an inventory
+        // read like that came out smaller and got saved over the file
+        std::string cutOff = whole.substr(0, whole.find("\t\"2\"\n")); // the file ends after item 1, "items" still open
+        std::string extraBrace = whole;
+        extraBrace.insert(extraBrace.find("\t\"2\"\n"), "}\n"); // closes "items" early, then the root
+        std::string openQuote = whole.substr(0, whole.rfind("\"\n}"));
+
+        struct Case
+        {
+            const char *what;
+            const std::string *text;
+            bool complete;
+        };
+        const std::string testPath = Platform::DataPath("selftest_keyvalues.txt");
+        for (const Case &test : { Case{ "a whole file", &whole, true }, Case{ "a file cut off after the first item", &cutOff, false },
+                 Case{ "a '}' too many", &extraBrace, false }, Case{ "a string without its closing quote", &openQuote, false } })
+        {
+            write(testPath, *test.text);
+            KeyValueRead read{ testPath.c_str() };
+            const KeyValue *items = read.Root().GetSubkey("items");
+            CHECK(read.Good() && read.Complete() == test.complete, "%s: parsed with %zu items, %s",
+                test.what, items ? items->Subkeys().size() : 0, read.Complete() ? "whole" : "told apart as damaged");
+        }
+        Platform::RemoveFile(testPath);
+
+        write(path, whole);
+        Platform::RemoveFile(path + ".bak");
+        {
+            Inventory inventory{ SteamId };
+        } // saves on the way out
+        {
+            KeyValueRead saved{ path.c_str() };
+            const KeyValue *items = saved.Root().GetSubkey("items");
+            CHECK(saved.Complete() && items && items->Subkeys().size() == 2 && !Platform::FileExists(path + ".tmp"),
+                "saved through inventory.txt.tmp: it's gone and inventory.txt reads whole (%zu items)",
+                items ? items->Subkeys().size() : 0);
+        }
+        CHECK(readAll(path + ".bak") == whole, "inventory.txt.bak is the file as the start found it");
+
+        // a stale .tmp of a run that died while writing doesn't get in the way
+        write(path + ".tmp", "\"items\"\n{\n\t\"1\"\n\t{\n");
+        {
+            Inventory inventory{ SteamId };
+        }
+        {
+            KeyValueRead saved{ path.c_str() };
+            CHECK(saved.Complete() && !Platform::FileExists(path + ".tmp"), "a leftover inventory.txt.tmp is replaced, then gone");
+        }
+
+        Platform::RemoveFile(path);
+        Platform::RemoveFile(path + ".bak");
+        {
+            Inventory inventory{ SteamId };
+        }
+        CHECK(Platform::FileExists(path) && !Platform::FileExists(path + ".bak"), "no inventory.txt: a new one is saved, nothing to back up");
     }
 
     printf("[SteamGameServer015 proxy]\n");

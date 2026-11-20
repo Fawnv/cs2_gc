@@ -7,7 +7,7 @@ In Valve games, the Game Coordinator (GC) is the backend service behind inventor
 
 ## Features
 
-- **Inventory:** equipping (CS2 equip slots), case opening including the newest cases, 7-day case rentals, stickers (with rotation, scale and offset), charms (applying and removing), name tags, storage units, music kits, StatTrak and StatTrak swaps, souvenirs and the in-game store
+- **Inventory:** equipping (CS2 equip slots), case opening including the newest cases, 7-day case rentals, stickers (with rotation, scale and offset, scraping to any wear or off), charms (applying and removing), name tags, storage units, music kits, StatTrak and StatTrak swaps, souvenirs and the in-game store
 - **Trade up contracts**, including five coverts for a knife or gloves
 - **Armory:** pass activation, stars and rewards
 - **Progression:** level and XP kept in the inventory file, XP for matches with bots and on community servers, the weekly care package and the Service Medal at level 40
@@ -50,6 +50,8 @@ Changes are saved to `inventory.txt`. `"inventory_editor_port"` sets the port. T
 
 `inventory.txt` has the same format as in csgo_gc, so its offline editors work too. Edit it only while the game is closed, or the GC will overwrite it.
 
+The GC saves the inventory to `inventory.txt.tmp` and then renames it over `inventory.txt`, so a crash in the middle of a save leaves the old file intact. At every start the file, once read, is copied to `inventory.txt.bak`. A damaged `inventory.txt` (unreadable, an unclosed block or string, a `}` too many) stops the game with a message instead of being read in part and saved over: fix it, restore `inventory.txt.bak`, or delete it to start a new inventory. The tools in `tools/` leave `inventory.txt` alone while `cs2_gc.exe` is running.
+
 ## Configuration
 
 See [examples/config.txt](examples/config.txt) (it becomes `release\cs2_gc\config.txt`). The main options:
@@ -58,7 +60,7 @@ See [examples/config.txt](examples/config.txt) (it becomes `release\cs2_gc\confi
 |---|---|
 | `ranks` | Competitive, Wingman and Premier rank and wins |
 | `player_level`, `player_cur_xp` | level and XP of a new inventory; after that they're kept in `inventory.txt` |
-| `mods` | `1` turns on CSForge and the built-in interface fixes (the upgrader among them) |
+| `mods` | `1` turns on CSForge, the built-in interface fixes and the mods, the upgrader among them |
 | `panorama_fixes` | the built-in interface fixes, on by default when mods are on |
 | `match_xp` | XP for matches with bots and on community servers |
 | `upgrader_prices`, `upgrader_prices_hours` | the upgrader's price list currency (`RUB`, `USD`, `EUR`, or `off`) and how often it's refreshed |
@@ -77,31 +79,53 @@ cs2_gc\mods\<mod>\
   items_game.txt           "items_game" { "paint_kits" { ... } "music_definitions" { ... } ... }
   localization.txt         "lang" { "Tokens" { "PaintKit_my_skin_Tag" "My skin" } }
   localization_<lang>.txt  the same for one language
+  items_game_override.txt  changes to entries the schema already has, merged deep
+  items_extra.txt          schema sections only the GC reads (a case's knives)
+  panorama.txt             your code put into the game's interface scripts
   files\...                compiled game files (.vtex_c, .vsnd_c, .vmdl_c...) at their game paths
 ```
 
 - `items_game.txt` sections are appended to the game's schema. Ids the game or an earlier mod already has are skipped (duplicates crash the client), existing entries can't be changed.
 - `localization.txt` tokens are added to every language in `"mod_languages"` (English and Russian by default) and replace existing ones, so anything in the game can be renamed.
 - For the same path in `files\`, the mod with the higher `priority` wins. Mods load by priority, then by folder name.
-- `CSForge:` lines in `gc_log.txt` list the mods, conflicts, skipped ids and the built VPK.
+- `items_game_override.txt` changes what's there already, at any depth: a text replaces the text at the same place, a block adds to the block there. For example, `"client_loot_lists" { "crate_community_33_ancient" { "[my_kit]weapon_ak47" "1" } }` puts a skin into the Kilowatt Case.
+- `items_extra.txt` has schema sections only the GC reads, like a case's knife list (the game keeps its own the same way).
+- `panorama.txt` puts code into a compiled script: `"panorama" { "1" { "file" "panorama/scripts/mainmenu.vts_c" "anchor" "anchor.js" "code" "code.js" } }` inserts `code.js` in front of the text of `anchor.js`, which must be in the script exactly once.
+- A `*_c` file whose header isn't a compiled Source 2 file's is left out, the game could crash on it. The mods' texts always go into the game's own language too (`-language`, or what Steam set for CS2).
+- `CSForge:` lines in `gc_log.txt` list the mods, conflicts, skipped ids and the built VPK. The Mods tab of the inventory editor shows every mod's errors and warnings from the build, installs a mod from a `.zip` (the button, or drop it on the tab) and deletes one (it goes to `cs2_gc\mods\_trash`).
 
 Compile your assets with the free CS2 Workshop Tools (`resourcecompiler`). Use ids above 10100 for paint kits and above 110 for music kits.
 
 ### Mod tools
 
-All of them work without the Workshop Tools. They only read the game folder and write mods into the data folder (`--data release\cs2_gc`).
+All of them work without the Workshop Tools. They only read the game folder and write mods into the data folder: `--data release\cs2_gc` by default, and before a build (no `release\` yet) `_data` next to the tools, made on first use.
+
+Needs `pip install numpy pillow` for the skin, sticker and case tools and the skin editor.
 
 | Tool | What it makes |
 |---|---|
 | `tools/make_demo_mod.py` | a demo mod: a custom AK-47 finish and the old CS:GO theme in the menu |
+| `tools/make_skin_mod.py` | a weapon skin from any picture, with inventory icons. Needs `pip install numpy pillow` |
+| `tools/skin_editor.py` | a skin editor in the browser: paint on the texture layout or on the 3D model, then build the skin |
 | `tools/make_music_mod.py` | a music kit from one mp3: replaces the tracks of an existing kit and renames it. `--cutter` opens a page to pick each slot's start on the waveform. [music_kits.md](music_kits.md) lists the kits |
 | `tools/make_sound_mod.py` | replaces any game sound (shots, footsteps, the bomb, UI) with your own file. `--list ak47` shows the game's sounds |
 | `tools/make_intro_mod.py` | replaces the COUNTER-STRIKE 2 intro video |
 | `tools/make_bot_mod.py` | sets the bot difficulty per game mode (the game has no menu for it) |
+| `tools/make_case_mod.py` | a keyless case of your skins: loot lists by rarity, a collection, knives as the rare special item. Also in the skin editor's "My skins" |
+| `tools/make_sticker_mod.py` | a sticker from any picture: paper, holo, glitter, foil or gold (`--finish`; `--mask` limits holo and glitter to the white of a mask), with its inventory icon. Also the skin editor's "Stickers" window: pick, drop or paste a picture, pick the finish, build. The finishes are switches of the game's sticker shader, so each starts from a game sticker that has it and gets textures made from your picture |
+| `tools/pack_mod.py` | packs a mod into a `.zip` the Mods tab installs |
+| `tools/renumber_mod.py` | gives a mod free ids where the game or an earlier mod has its ids (`--move-items` moves the inventory's items too) |
 
 The tools convert other audio formats to MP3 with ffmpeg, or with the codecs built into Windows when ffmpeg isn't installed.
 
+`make_skin_mod.py` wraps the picture around both sides of the weapon, over the weapon's own colors. To paint the texture yourself, `--template ak47 ak47.png` saves the weapon's texture layout and `--mode uv` builds a skin from the painted file. `--finish` picks the finish: `custom` (paint, the default), `gunsmith` (paint over metal, `--paint-mask` marks the bare metal) or `patina` (the texture is the metal color). `--colors`, `--roughness` and `--pearlescence` set the finish's values. Every weapon gets its own paint kit, and its inventory icons are drawn from the same texture. `--weapons` lists what it can paint: the 55 guns and knives, the six grenades and the C4. `previews\` in the mod folder shows the result before you start the game.
+
+The game doesn't draw paint kits on grenades and the C4 (tested: even with the maps and the paintable flag the client never starts the paint for them), so a grenade skin replaces the grenade's own texture: the mod carries the painted texture and a copy of the grenade's material pointing at it. Every grenade of that kind looks like that, the bots' too, there is no wear, and the newest skin of each grenade is the one in use (removing it brings back the previous one). `tools/mesh_inputs.py` bakes the maps the editor and the icons need from the model (the meshoptimizer-compressed mesh is read by `source2.py`). On the molotov only the rag, neck and cap take paint (the bottle is a separate glass and liquid material). `--add-item` still puts the item into the inventory, equipped.
+
+`python tools\skin_editor.py` opens the same thing as a page (http://127.0.0.1:13002/, it finds CS2 through Steam; `--data` picks another data folder). The texture layout is on the left and the weapon's 3D model is on the right, and the brush, eraser and fill work on both. A picture can go on the layout as a layer you move and turn, or onto the model as a sticker projected from the current view. "Game light" shades the model with the weapon's own baked normals and ambient occlusion and the matte paint of Valve's custom paint material, close to how the game draws it (lighting on a map still varies). The finish (custom paint, gunsmith or patina) is picked at the top, with its metal colors, roughness and pearlescence on the right; on gunsmith a layer ticked "Metal" becomes bare metal. Grenades and the C4 are a group of their own in the weapon list (their maps take a few seconds to bake the first time); their skins replace the grenade's own texture. "Build skin" writes the skin into `mods\skins` like `--mode uv` and keeps the painted texture in `mods\skins\sources\`, so the skin can be opened and painted again later.
+
 ```bat
+python tools\make_skin_mod.py --cs2 "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" --data release\cs2_gc --image pic.png --weapon ak47 --name "My AK" --add-item
 python tools\make_music_mod.py --cs2 "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" --data release\cs2_gc --mp3 track.mp3 --name "My kit" --kit theverkkars_01 --add-item
 python tools\make_sound_mod.py --cs2 "..." --data release\cs2_gc --audio shot.mp3 --sound "sounds/weapons/ak47/ak47_0*" --length 0.6
 python tools\make_bot_mod.py --cs2 "..." --data release\cs2_gc --difficulty expert
@@ -112,11 +136,9 @@ python tools\make_bot_mod.py --cs2 "..." --data release\cs2_gc --difficulty expe
 With mods on, CSForge also patches the game's own Panorama scripts at every start (`"panorama_fixes" "1"`). The current scripts are read from the game, so a game update can't bring back an old copy, and a fix whose anchor is gone is skipped with a line in the log.
 
 - A case without a key used to open a window with no buttons at all during a match, not even Close. Now it opens for viewing only, with Close.
-- The upgrader, see below.
-
 ## Upgrader
 
-An *Upgrader* tab in the inventory, and *Upgrade* in a skin's right-click menu. Put up to 10 skins in (knives and gloves too) and pick a target. If the wheel stops in the chance arc you get the target, otherwise the skins are gone.
+The mod `mods\upgrader`, which comes with cs2_gc (needs `"mods" "1"`, turn it off in the Mods tab): an *Upgrader* tab in the inventory, and *Upgrade* in a skin's right-click menu. Put up to 10 skins in (knives and gloves too) and pick a target. If the wheel stops in the chance arc you get the target, otherwise the skins are gone.
 
 - **Chance:** what the bet is worth divided by the target's price. A skin worth 50 for one worth 100 is 50%. The target has to cost more than the bet, so cheaper targets aren't offered.
 - **Targets:** a skin in a given wear (FN, MW, FT, WW, BS), cheapest first, each with its price and your chance. Filters: rarity, type, same weapon, StatTrak™, and x1.5-x10 multipliers that only show targets at least that many times the bet. The skin you win gets a float within the wear you picked.
@@ -124,6 +146,8 @@ An *Upgrader* tab in the inventory, and *Upgrade* in a skin's right-click menu. 
 - **No price list:** with `"upgrader_prices" "off"`, or without internet on the first start, the chances go by rarity, 1:10 per rarity step.
 
 The roll happens in the GC, with the same prices the window shows. The won skin stays hidden until the wheel stops.
+
+The window is the mod's JavaScript (`mods\upgrader\panorama\`), put into the inventory scripts through its `panorama.txt`, so it can be changed without building cs2_gc. The GC fills in the catalog (`@csforge:upgrader_catalog@`) and does the bets, so the mod says `"needs" "upgrader 1"`: a copy made for another version of cs2_gc isn't applied at all, and the Mods tab says so. `build.cmd` refreshes the mod in `release\cs2_gc\mods` and keeps your `mod.txt` (on/off, priority).
 
 ## Building
 
@@ -178,6 +202,7 @@ protobufs/     CS2 GC protobufs (dumped from client.dll); csgo_original/ has csg
 steamworks/    Steamworks headers and the generated interface proxies
 tests/         the offline self-test
 tools/         protobuf and interface dumpers, the editor catalogue generator, mod tools, packaging
+mods/upgrader/ the upgrader mod, installed into release\cs2_gc\mods by the build
 editor/        the web inventory editor (a fork of csgo_invedit) with the CS2 catalogue
 examples/      config.txt, inventory.txt, items_extra.txt, price_sheet.txt, a demo mod
 reference/     the original csgo_gc README
@@ -200,14 +225,3 @@ Open an issue with what you did, what happened and `gc_log.txt`. If it doesn't l
 - [market.csgo.com](https://market.csgo.com) - the upgrader's prices
 
 Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation.
-
-
-## Star History
-
-<a href="https://www.star-history.com/?repos=fawnv%2Fcs2_gc&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
- </picture>
-</a>

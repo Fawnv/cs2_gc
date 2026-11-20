@@ -31,6 +31,27 @@ static std::string s_builtVpk;
 // folder -> enabled, priority as Build saw them, to tell the editor what changed since the game started
 static std::map<std::string, std::pair<bool, int>> s_loadedState;
 
+// mod folder ("" = CSForge itself) -> what Build had to say, for the editor's Mods tab
+static std::map<std::string, std::vector<ModProblem>> s_problems;
+
+static void Problem(std::string_view folder, bool error, std::string text)
+{
+    Platform::Print("CSForge: {}{}{}\n", folder, folder.empty() ? "" : ": ", text);
+
+    // once: a token that can't be replaced comes up again for every language
+    std::vector<ModProblem> &problems = s_problems[std::string{ folder }];
+    if (std::none_of(problems.begin(), problems.end(), [&](const ModProblem &problem) { return problem.text == text; }))
+    {
+        problems.push_back({ error, std::move(text) });
+    }
+}
+
+std::vector<ModProblem> GeneralProblems()
+{
+    auto it = s_problems.find({});
+    return it != s_problems.end() ? it->second : std::vector<ModProblem>{};
+}
+
 const std::string &BuiltVpkPath()
 {
     return s_builtVpk;
@@ -299,8 +320,153 @@ bool ParseChildren(std::string_view text, const Section &section, std::vector<Ch
 
 } // namespace
 
+// DeepOverride: the custom block's children into the base blocks of the same path (a block can be
+// there more than once, items_game.txt has 144 "client_loot_lists"). Edits are collected as
+// replacements and as inserts at a block's end (one text per position, in order)
+static bool DeepMergeBlock(std::string_view baseText, const std::vector<Section> &baseBlocks, std::string_view customText,
+    const Section &customBlock, const std::string &path, std::vector<std::tuple<size_t, size_t, std::string>> &replace,
+    std::map<size_t, std::string> &insert, MergeReport &report, std::string &error)
+{
+    std::vector<Child> customChildren;
+    if (!ParseChildren(customText, customBlock, customChildren))
+    {
+        error = std::format("mod: can't parse '{}'", path);
+        return false;
+    }
+
+    std::vector<std::vector<Child>> baseChildren(baseBlocks.size());
+    for (size_t i = 0; i < baseBlocks.size(); i++)
+    {
+        if (!ParseChildren(baseText, baseBlocks[i], baseChildren[i]))
+        {
+            error = std::format("base: can't parse '{}'", path);
+            return false;
+        }
+    }
+
+    for (const Child &custom : customChildren)
+    {
+        std::string id = path + "/" + custom.key;
+        std::vector<Section> sameBlocks; // the base's blocks of this key, to merge into
+        const Child *sameText = nullptr;
+        bool mismatch = false;
+        for (const std::vector<Child> &children : baseChildren)
+        {
+            for (const Child &base : children)
+            {
+                if (base.key != custom.key)
+                {
+                    continue;
+                }
+
+                if (base.block != custom.block)
+                {
+                    mismatch = true;
+                }
+                else if (base.block)
+                {
+                    sameBlocks.push_back({ base.key, base.valueStart + 1, base.end - 1 });
+                }
+                else if (!sameText)
+                {
+                    sameText = &base;
+                }
+            }
+        }
+
+        if (custom.block && !sameBlocks.empty())
+        {
+            Section customBody{ custom.key, custom.valueStart + 1, custom.end - 1 };
+            if (!DeepMergeBlock(baseText, sameBlocks, customText, customBody, id, replace, insert, report, error))
+            {
+                return false;
+            }
+        }
+        else if (!custom.block && sameText)
+        {
+            replace.emplace_back(sameText->valueStart, sameText->end - sameText->valueStart,
+                std::string{ customText.substr(custom.valueStart, custom.end - custom.valueStart) });
+            report.overridden.push_back(id);
+        }
+        else if (mismatch)
+        {
+            report.skipped.push_back(id);
+        }
+        else
+        {
+            insert[baseBlocks.front().bodyEnd] += std::format("\n\t\t{}", customText.substr(custom.start, custom.end - custom.start));
+            report.added++;
+            report.addedKeys.push_back(id);
+        }
+    }
+
+    return true;
+}
+
+static bool DeepMerge(std::string &baseText, std::string_view customText, MergeReport &report, std::string &error)
+{
+    std::vector<Section> baseSections, customSections;
+    size_t baseClose = 0, customClose = 0;
+    if (!ParseRoot(baseText, baseSections, baseClose, error))
+    {
+        error = "base: " + error;
+        return false;
+    }
+    if (!ParseRoot(customText, customSections, customClose, error))
+    {
+        error = "mod: " + error;
+        return false;
+    }
+
+    std::vector<std::tuple<size_t, size_t, std::string>> replace;
+    std::map<size_t, std::string> insert;
+    for (const Section &custom : customSections)
+    {
+        std::vector<Section> same;
+        std::copy_if(baseSections.begin(), baseSections.end(), std::back_inserter(same), [&](const Section &s) { return s.name == custom.name; });
+        if (same.empty())
+        {
+            insert[baseClose] += std::format("\t\"{}\"\n\t{{{}}}\n", custom.name, customText.substr(custom.bodyStart, custom.bodyEnd - custom.bodyStart));
+            report.added++;
+            report.addedKeys.push_back(custom.name);
+            continue;
+        }
+
+        if (!DeepMergeBlock(baseText, same, customText, custom, custom.name, replace, insert, report, error))
+        {
+            return false;
+        }
+    }
+
+    // back to front; at one position the insert goes after a replacement that ends there
+    std::vector<std::tuple<size_t, size_t, std::string>> edits = std::move(replace);
+    for (auto &[position, text] : insert)
+    {
+        edits.emplace_back(position, 0, text + "\n\t");
+    }
+    std::stable_sort(edits.begin(), edits.end(), [](const auto &a, const auto &b) { return std::get<0>(a) > std::get<0>(b); });
+    for (const auto &[position, length, text] : edits)
+    {
+        baseText.replace(position, length, text);
+    }
+
+    std::vector<Section> check;
+    size_t checkClose = 0;
+    if (!ParseRoot(baseText, check, checkClose, error))
+    {
+        error = "merged: " + error;
+        return false;
+    }
+    return true;
+}
+
 bool MergeSections(std::string &baseText, std::string_view customText, MergeMode mode, MergeReport &report, std::string &error)
 {
+    if (mode == MergeMode::DeepOverride)
+    {
+        return DeepMerge(baseText, customText, report, error);
+    }
+
     std::vector<Section> baseSections, customSections;
     size_t baseClose = 0, customClose = 0;
 
@@ -391,6 +557,7 @@ bool MergeSections(std::string &baseText, std::string_view customText, MergeMode
             appendTo[custom.name] += std::format("\n\t\t{}", customText.substr(child.start, child.end - child.start));
             known->second.try_emplace(child.key, Child{ child.key, std::string::npos, std::string::npos, std::string::npos, child.block });
             report.added++;
+            report.addedKeys.push_back(id);
         }
     }
 
@@ -506,7 +673,7 @@ std::vector<ModInfo> ListMods()
             }
             else
             {
-                Platform::Print("CSForge: {} doesn't parse (expected \"mod\" {{ ... }}), using defaults\n", infoPath);
+                mod.infoBroken = true;
             }
         }
 
@@ -676,6 +843,7 @@ static constexpr PanoramaFix StaticPanoramaFixes[] = {
 // ------------------------------------------------------------------ the upgrader
 
 static std::vector<UpgradeTarget> s_upgraderCatalog;
+static bool s_upgraderBuilt; // this Build made the catalog already
 static std::unordered_map<uint64_t, size_t> s_upgraderIndex; // def << 32 | paint kit -> catalog index
 static std::string s_upgraderCurrency;
 static int64_t s_upgraderPriceTime;
@@ -864,825 +1032,38 @@ uint64_t UpgraderItemPrice(const Item &item)
     return target.price[wear];
 }
 
-// the context menu entry on a skin: puts it in the upgrader tab's deposit and opens the tab, through
-// the hook the inventory script leaves on its InventoryMain panel (Data() is how the game itself
-// hands things between scripts, see oSettings of the popups)
-static constexpr std::string_view UpgraderMenuEntry = R"JS({
-            name: 'csgc_upgrade',
-            style: (id) => 'TopSeparator',
-            AvailableForItem: (id) => {
-                if (InventoryAPI.IsFauxItemID(id) || InventoryAPI.IsRental(id))
-                    return false;
-                const slot = InventoryAPI.GetDefaultSlot(id);
-                if (!slot || slot === 'c4' || ItemInfo.IsEquippalbleButNotAWeapon(id))
-                    return false;
-                // a stock gun with a charm or a name is a real item too, but normal quality. Knives
-                // and gloves can go in too: the window looks up the price
-                if (Number(InventoryAPI.GetItemQuality(id)) === 0)
-                    return false;
-                return Number(InventoryAPI.GetItemRarity(id)) >= 1;
-            },
-            OnSelected: (id) => {
-                $.DispatchEvent('ContextMenuEvent', '');
-                let root = $.GetContextPanel();
-                while (root.GetParent())
-                    root = root.GetParent();
-                const main = root.FindChildTraverse('InventoryMain');
-                if (main && main.Data().csgcUpgrade)
-                    main.Data().csgcUpgrade(id);
-                else
-                    $.Msg('[csgc upgrader] the inventory tab is not there\n');
-            }
-        },
-        )JS";
 
-// the upgrader tab, built from script with plain panels, a sub tab of the inventory next to the
-// game's own (mainmenu_inventory makes those from script too). The choice goes to the gc as
-// SetItemAttributeValueAsync (k_EMsgGCModifyItemAttribute, any stored_as_integer attribute passes):
-// "upgrade threshold" = target index + 1 on every deposit, then "upgrade level" = deposit count.
-// The wheel: a ring with the chance as an arc at the bottom (clip: radial, like the Armory's
-// progress ring), the percent in a smaller circle, a needle that spins to where the gc's roll says
-static constexpr std::string_view UpgraderModule = R"JS(var CsgcUpgrader = (function () {
-    // per skin: def, paint kit, tier (the color), then its prices per wear (Factory New .. Battle-Scarred)
-    // in hundredths of the currency: 5 plain, 5 StatTrak, 5 souvenir; 0 = not on sale
-    const CATALOG = [@CATALOG@];
-    const STRIDE = 18;
-    const CURRENCY = '@CURRENCY@'; // empty: no price list, the prices are 10^tier (1:10 per rarity step)
-    const PRICE_TIME = @PRICE_TIME@;
-    const COUNT = CATALOG.length / STRIDE;
-    const COLORS = ['#ffffff', '#b0c3d9', '#5e98d9', '#4b69ff', '#8847ff', '#d32ce6', '#eb4b4b', '#e4ae39'];
-    const WEARS = ['FN', 'MW', 'FT', 'WW', 'BS'];
-    const MULTIPLIERS = [1.5, 2, 3, 5, 10];
-    const PAGE_SIZE = 20;
-    const MAX_DEPOSITS = 10;
-    const SPIN_SECONDS = 6;
-    const SPIN_TURNS = 8;
-    const REVEAL_DELAY = 0.8; // the game's new item popup, this long after the needle stops
-    const REST = 180; // the needle waits at the bottom, in the middle of the win arc
-    const byKey = {}; // def * 65536 + paint kit -> catalog index
-    for (let i = 0; i < COUNT; i++)
-        byKey[CATALOG[i * STRIDE] * 65536 + CATALOG[i * STRIDE + 1]] = i;
-    const names = {};
-    let prices = {}; // item id -> what it's worth, until the next inventory update
-    let categories = null;
-    const state = { deposits: [], target: null, tier: 0, kind: 'all', same: false, statTrak: false, multiplier: 0, page: 0, picking: false,
-        busy: false, result: null, rotation: REST, spinChance: 0, updates: 0, hold: null, note: '' };
-    let ui = null;
-    let panel = null;
-    function T(token, fallback) {
-        const text = $.Localize('#' + token);
-        return (!text || text.charAt(0) === '#') ? fallback : text;
-    }
-    function Money(hundredths) {
-        if (!CURRENCY || !hundredths)
-            return '';
-        const fixed = (hundredths / 100).toFixed(hundredths >= 100000 ? 0 : 2).split('.');
-        const text = fixed[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + (fixed.length > 1 ? '.' + fixed[1] : '');
-        if (CURRENCY === 'USD')
-            return '$' + text;
-        if (CURRENCY === 'EUR')
-            return text + ' €';
-        if (CURRENCY === 'RUB')
-            return text + ' ' + T('csgc_upgrade_rub', 'RUB');
-        return text + ' ' + CURRENCY;
-    }
-    function Percent(chance) {
-        const p = chance * 100;
-        return (p >= 1 ? p.toFixed(2) : p >= 0.01 ? p.toFixed(3) : p.toFixed(5)) + '%';
-    }
-    // kind: 0 plain, 1 StatTrak, 2 souvenir
-    function Price(index, wear, kind) {
-        return CATALOG[index * STRIDE + 3 + kind * 5 + wear] || 0;
-    }
-    function TierOf(id) {
-        const slot = InventoryAPI.GetDefaultSlot(id);
-        if (slot === 'melee' || slot === 'clothing_hands')
-            return 7;
-        return Number(InventoryAPI.GetItemRarity(id)) || 0;
-    }
-    function Kind(def) {
-        return def >= 4700 ? 'gloves' : def >= 500 ? 'knives' : 'guns';
-    }
-    function Faux(index) {
-        return InventoryAPI.GetFauxItemIDFromDefAndPaintIndex(CATALOG[index * STRIDE], CATALOG[index * STRIDE + 1]);
-    }
-    function Name(index) {
-        if (!(index in names))
-            names[index] = InventoryAPI.GetItemName(Faux(index));
-        return names[index];
-    }
-    // an inventory item's catalog skin: by its paint kit, or by the name when that can't be read
-    // (the item's name has the finish's in it, with StatTrak or Souvenir in front)
-    function IndexOf(id) {
-        const def = Number(InventoryAPI.GetItemDefinitionIndex(id));
-        const index = byKey[def * 65536 + Number(InventoryAPI.GetItemAttributeValue(id, 'set item texture prefab'))];
-        if (index !== undefined)
-            return index;
-        const name = InventoryAPI.GetItemName(id) || '';
-        for (let i = 0; i < COUNT; i++) {
-            if (CATALOG[i * STRIDE] === def && name.indexOf(Name(i)) >= 0)
-                return i;
-        }
-        return -1;
-    }
-    // what an inventory item is worth, the way the gc counts it: its wear, StatTrak, souvenir
-    function ItemPrice(id) {
-        if (id in prices)
-            return prices[id];
-        let price = 0;
-        const index = IndexOf(id);
-        if (index >= 0) {
-            let wear = Number(InventoryAPI.GetWear(id));
-            if (!(wear >= 0 && wear <= 4))
-                wear = 0;
-            const statTrak = InventoryAPI.GetItemAttributeValue(id, 'kill eater') !== undefined;
-            const souvenir = Number(InventoryAPI.GetItemQuality(id)) === 12;
-            price = Price(index, wear, statTrak ? 1 : souvenir ? 2 : 0);
-        }
-        prices[id] = price;
-        return price;
-    }
-    // the guns, knives and gloves in the inventory, the way the game's own search lists them: the
-    // filter wants a loadout category first, flags alone give nothing. Also how a burnt deposit is
-    // noticed (IsValidItemID only looks at the id's form)
-    function InventoryItems() {
-        if (!categories) {
-            categories = ['secondary', 'smg', 'rifle', 'heavy', 'melee', 'clothing_hands'];
-            try {
-                InventoryAPI.GetCategories().split(',').forEach((category) => {
-                    InventoryAPI.GetSubCategories(category).split(',').forEach((sub) => {
-                        if (sub && categories.indexOf(sub) < 0 && /melee|knife|glove|hand|clothing/.test(sub))
-                            categories.push(sub);
-                    });
-                });
-            }
-            catch (e) {
-                $.Msg('[csgc upgrader] categories: ' + e + '\n');
-            }
-            $.Msg('[csgc upgrader] inventory categories: ' + categories.join(', ') + '\n');
-        }
-        const ids = [];
-        const seen = {};
-        categories.forEach((category) => {
-            InventoryAPI.SetInventorySortAndFilters('inv_sort_rarity', false, category + ',is_rental:false', '', '');
-            const count = InventoryAPI.GetInventoryCount();
-            for (let i = 0; i < count; i++) {
-                const id = InventoryAPI.GetInventoryItemIDByIndex(i);
-                if (!seen[id]) {
-                    seen[id] = true;
-                    ids.push(id);
-                }
-            }
-        });
-        return ids;
-    }
-    // why an item can't go in: '' if it can
-    function Reject(id) {
-        if (!id || !InventoryAPI.IsValidItemID(id) || InventoryAPI.IsFauxItemID(id) || InventoryAPI.IsRental(id))
-            return 'id';
-        const slot = InventoryAPI.GetDefaultSlot(id);
-        if (!slot || ['c4', 'flair0', 'musickit', 'spray0', 'customplayer', 'pet'].indexOf(slot) >= 0)
-            return 'slot';
-        // stock guns (with a charm, stickers or a name they're real items too) are normal quality
-        if (Number(InventoryAPI.GetItemQuality(id)) === 0)
-            return 'stock';
-        return ItemPrice(id) > 0 ? '' : 'price';
-    }
-    function CanDeposit(id) {
-        return Reject(id) === '';
-    }
-    function BetValue() {
-        let total = 0;
-        for (const id of state.deposits) {
-            const price = ItemPrice(id);
-            if (!price)
-                return 0;
-            total += price;
-        }
-        return total;
-    }
-    function TargetPrice(target) {
-        target = target || state.target;
-        return target ? Price(target.index, target.wear, target.st ? 1 : 0) : 0;
-    }
-    // what the bet is worth over the target's price; 0 when the target isn't dearer
-    function Chance() {
-        const bet = BetValue();
-        const price = TargetPrice();
-        return bet > 0 && price > bet ? bet / price : 0;
-    }
-    function TargetLine(target, bet) {
-        const price = TargetPrice(target);
-        return WEARS[target.wear] + (target.st ? ' ST' : '') + (CURRENCY ? ' · ' + Money(price) : '') +
-            (bet > 0 && price > bet ? ' · ' + Percent(bet / price) : '');
-    }
-    function RuleText() {
-        if (!CURRENCY)
-            return T('csgc_upgrade_rule', '1:10 per rarity step, the chances of several skins add up. The skins burn if it fails.');
-        const date = new Date(PRICE_TIME * 1000);
-        const two = (n) => (n < 10 ? '0' : '') + n;
-        return T('csgc_upgrade_rule_prices', 'Chance = what the bet is worth / the target\'s price, the target has to cost more. The skins burn if it fails. Prices:') +
-            ' market.csgo.com, ' + two(date.getDate()) + '.' + two(date.getMonth() + 1) + ' ' + two(date.getHours()) + ':' + two(date.getMinutes());
-    }
-    function Style(target, style) {
-        for (const key in style)
-            target.style[key] = style[key];
-        return target;
-    }
-    function Box(parent, flow, style) {
-        const box = $.CreatePanel('Panel', parent, '');
-        box.style.flowChildren = flow;
-        return Style(box, style || {});
-    }
-    function Text(parent, text, style) {
-        const label = $.CreatePanel('Label', parent, '');
-        label.text = text;
-        return Style(label, Object.assign({ color: '#ffffffdd', fontSize: '18px' }, style || {}));
-    }
-    function Btn(parent, text, onClick, style) {
-        const button = $.CreatePanel('Button', parent, '');
-        Style(button, Object.assign({ backgroundColor: '#ffffff1a', padding: '6px 12px', margin: '3px' }, style || {}));
-        if (text)
-            Text(button, text, { fontSize: '16px', horizontalAlign: 'center', verticalAlign: 'center' });
-        button.SetPanelEvent('onactivate', onClick);
-        return button;
-    }
-    function Tile(parent, itemId, tier, label, onClick, selected, sub) {
-        const tile = $.CreatePanel('Button', parent, '');
-        Style(tile, { width: '132px', height: '146px', margin: '4px', flowChildren: 'down', backgroundColor: selected ? '#ffffff38' : '#ffffff0d' });
-        const image = $.CreatePanel('ItemImage', tile, '', { itemid: itemId, scaling: 'stretch-to-fit-preserve-aspect' });
-        image.itemid = itemId;
-        Style(image, { width: '124px', height: '84px', horizontalAlign: 'center' });
-        Box(tile, 'none', { width: '100%', height: '3px', backgroundColor: COLORS[tier] || '#ffffff' });
-        Text(tile, label, { fontSize: '13px', width: '100%', textAlign: 'center', textOverflow: 'shrink' });
-        if (sub)
-            Text(tile, sub, { fontSize: '13px', color: '#e8c060', width: '100%', textAlign: 'center', textOverflow: 'shrink' });
-        if (onClick)
-            tile.SetPanelEvent('onactivate', onClick);
-        return tile;
-    }
-)JS"
-    R"JS(    function BuildWheel(parent) {
-        const size = 300;
-        const wheel = Box(parent, 'none', { width: size + 'px', height: size + 'px', horizontalAlign: 'center', margin: '6px 0px 12px 0px' });
-        Box(wheel, 'none', { width: '100%', height: '100%', borderRadius: '50%', backgroundColor: '#3b3f45' });
-        Box(wheel, 'none', { width: (size - 14) + 'px', height: (size - 14) + 'px', borderRadius: '50%', backgroundColor: '#17191c', horizontalAlign: 'center', verticalAlign: 'center' });
-        ui.arc = Box(wheel, 'none', { width: (size - 14) + 'px', height: (size - 14) + 'px', borderRadius: '50%', backgroundColor: '#e8840c', horizontalAlign: 'center', verticalAlign: 'center' });
-        ui.arc.style.clip = 'radial(50% 50%, 180deg, 0deg)';
-        const inner = Box(wheel, 'down', { width: (size - 92) + 'px', height: (size - 92) + 'px', borderRadius: '50%', backgroundColor: '#22252a', border: '3px solid #4a4e55', horizontalAlign: 'center', verticalAlign: 'center' });
-        ui.percent = Text(inner, '-', { fontSize: '42px', color: '#ffffff', horizontalAlign: 'center', margin: '64px 0px 0px 0px' });
-        Text(inner, T('csgc_upgrade_chance', 'Chance'), { fontSize: '18px', color: '#ffffffaa', horizontalAlign: 'center' });
-        ui.spinner = Box(wheel, 'none', { width: '100%', height: '100%' });
-        Box(ui.spinner, 'none', { width: '10px', height: '50px', backgroundColor: '#ffffff', borderRadius: '5px', border: '2px solid #000000aa', horizontalAlign: 'center', verticalAlign: 'top', margin: '2px 0px 0px 0px' });
-        ui.spinner.style.transform = 'rotateZ(' + REST + 'deg)';
-    }
-    function SetWheel(chance) {
-        const sweep = Math.max(0, Math.min(360, chance * 360));
-        ui.arc.style.clip = 'radial(50% 50%, ' + (180 - sweep / 2).toFixed(3) + 'deg, ' + sweep.toFixed(3) + 'deg)';
-        ui.percent.text = chance > 0 ? Percent(chance) : '-';
-    }
-    // the game shows its new item popup on every inventory update and the count on the inventory
-    // button: both held back while the wheel spins, the way the game's own case and trade up
-    // popups do it (CapabilityPopupIsOpen), or the won skin shows before the needle stops
-    function HoldReveal() {
-        let root = panel;
-        while (root.GetParent())
-            root = root.GetParent();
-        state.hold = { alert: root.FindChildTraverse('MainMenuInvAlert'), count: InventoryAPI.GetUnacknowledgeItemsCount() };
-        $.DispatchEvent('CapabilityPopupIsOpen', true);
-    }
-    function KeepAlert() {
-        const alert = state.hold && state.hold.alert;
-        if (alert && alert.IsValid()) {
-            alert.SetDialogVariable('alert_value', state.hold.count.toString());
-            alert.SetHasClass('hidden', state.hold.count < 1);
-        }
-    }
-    function Reveal() {
-        if (!state.hold)
-            return;
-        state.hold.count = InventoryAPI.GetUnacknowledgeItemsCount();
-        KeepAlert();
-        state.hold = null;
-        $.DispatchEvent('CapabilityPopupIsOpen', false); // the inventory looks again: the popup
-    }
-    function Spin(won, then) {
-        // the needle lands inside the win arc (centered at the bottom) or outside it, after 8 turns.
-        // Turned frame by frame: a transition goes from one rotateZ to the other the short way,
-        // whole turns in between are lost
-        const sweep = Math.max(0, Math.min(360, state.spinChance * 360));
-        let land;
-        if (won)
-            land = 180 + (Math.random() - 0.5) * sweep * 0.8;
-        else
-            land = (180 + sweep / 2 + (360 - sweep) * (0.1 + 0.8 * Math.random())) % 360;
-        const start = ((state.rotation % 360) + 360) % 360;
-        let delta = land - start;
-        if (delta < 0)
-            delta += 360;
-        const total = 360 * SPIN_TURNS + delta;
-        const began = Date.now();
-        let notch = 0;
-        let ticked = 0;
-        ui.spinner.style.transitionDuration = '0s';
-        const frame = () => {
-            const t = Math.min(1, (Date.now() - began) / (SPIN_SECONDS * 1000));
-            // fast from the start, slowing down towards the end (ease out cubic)
-            const turned = total * (1 - Math.pow(1 - t, 3));
-            ui.spinner.style.transform = 'rotateZ(' + ((start + turned) % 360).toFixed(2) + 'deg)';
-            // a tick every 30 degrees, no closer than 70 ms (a rattle while fast, clicks at the end)
-            if (Math.floor(turned / 30) !== notch && Date.now() - ticked > 70) {
-                notch = Math.floor(turned / 30);
-                ticked = Date.now();
-                $.DispatchEvent('CSGOPlaySoundEffect', 'UIPanorama.XP.Ticker', 'MOUSE');
-            }
-            KeepAlert();
-            if (t < 1) {
-                $.Schedule(0.01, frame);
-                return;
-            }
-            state.rotation = (start + total) % 360;
-            then();
-        };
-        frame();
-    }
-    function Build(target) {
-        panel = target;
-        ui = {};
-        panel.style.flowChildren = 'down';
-        ui.status = Text(panel, RuleText(), { fontSize: '16px', color: '#ffffff99', margin: '10px 16px 4px 16px' });
-        const body = Box(panel, 'right', { width: '100%', height: 'fill-parent-flow(1.0)', margin: '4px 16px 12px 16px' });
-        ui.left = Box(body, 'down', { width: '300px', height: '100%' });
-        const middle = Box(body, 'down', { width: '340px', height: '100%', margin: '0px 16px' });
-        ui.right = Box(body, 'down', { width: 'fill-parent-flow(1.0)', height: '100%' });
-        BuildWheel(middle);
-        ui.middle = Box(middle, 'down', { width: '100%' });
-    }
-    function Render() {
-        if (!ui)
-            return;
-        ui.status.text = state.note || RuleText();
-        // each part on its own, so one failing doesn't take the others with it
-        const errors = [];
-        [['left', RenderLeft], ['middle', RenderMiddle], ['right', RenderRight]].forEach((part) => {
-            try {
-                part[1]();
-            }
-            catch (e) {
-                errors.push(part[0] + ': ' + e);
-                $.Msg('[csgc upgrader] ' + part[0] + ': ' + e + '\n' + e.stack + '\n');
-            }
-        });
-        if (errors.length)
-            ui.status.text = 'Upgrader: ' + errors.join('; ');
-    }
-    function RenderLeft() {
-        ui.left.RemoveAndDeleteChildren();
-        const bet = BetValue();
-        Text(ui.left, T('csgc_upgrade_deposit', 'Your skins') + ' (' + state.deposits.length + '/' + MAX_DEPOSITS + ')' +
-            (CURRENCY && bet ? ': ' + Money(bet) : ''), { fontSize: '20px' });
-        const grid = Box(ui.left, 'right-wrap', { width: '100%', height: 'fill-parent-flow(1.0)', overflow: 'squish scroll' });
-        state.deposits.forEach((id) => {
-            Tile(grid, id, TierOf(id), InventoryAPI.GetItemName(id), () => {
-                if (state.busy)
-                    return;
-                state.deposits = state.deposits.filter((other) => other !== id);
-                state.result = null;
-                Render();
-            }, false, Money(ItemPrice(id)));
-        });
-        if (state.deposits.length < MAX_DEPOSITS && !state.busy) {
-            Btn(ui.left, state.picking ? T('csgc_upgrade_back', 'Back to the targets') : '+ ' + T('csgc_upgrade_add', 'Add a skin'), () => {
-                state.picking = !state.picking;
-                state.page = 0;
-                Render();
-            }, { width: '100%' });
-        }
-    }
-)JS"
-    R"JS(    function RenderMiddle() {
-        ui.middle.RemoveAndDeleteChildren();
-        const bet = BetValue();
-        const chance = state.busy ? state.spinChance : Chance();
-        if (!state.busy)
-            SetWheel(state.result ? state.spinChance : chance);
-        const row = Box(ui.middle, 'right', { horizontalAlign: 'center' });
-        if (state.result && !state.busy) {
-            if (state.result.won) {
-                Tile(row, state.result.won, TierOf(state.result.won), InventoryAPI.GetItemName(state.result.won), null, true, Money(ItemPrice(state.result.won)));
-                Text(ui.middle, T('csgc_upgrade_won', 'You got it!'), { fontSize: '26px', color: '#7fe07f', horizontalAlign: 'center' });
-            }
-            else {
-                Text(ui.middle, T('csgc_upgrade_lost', 'No luck, the skins are gone'), { fontSize: '22px', color: '#e07f7f', horizontalAlign: 'center' });
+// The upgrader's window is the mod mods\upgrader (it ships with cs2_gc): its JavaScript goes into the
+// game's inventory scripts through its panorama.txt, the catalog comes in as @csforge:upgrader_catalog@.
+// The window sends the choice as SetItemAttributeValueAsync (k_EMsgGCModifyItemAttribute, any
+// stored_as_integer attribute passes): "upgrade threshold" = target index + 1 on every deposit, then
+// "upgrade level" = deposit count. That, the catalog's layout (def, paint kit, tier, 5 plain, 5
+// StatTrak, 5 souvenir prices) and the index * 16 + wear * 2 + StatTrak target number are version 1
+// of what the mod "needs" ("upgrader 1"): change any of it and the number goes up.
+constexpr int UpgraderVersion = 1;
+
+// the catalog as the window reads it: def, paint kit, tier, then 15 prices, per skin
+static std::string UpgraderCatalogText()
+{
+    std::string catalog;
+    catalog.reserve(s_upgraderCatalog.size() * 80);
+    for (const UpgradeTarget &target : s_upgraderCatalog)
+    {
+        catalog += std::format("{},{},{},", target.defIndex, target.paintKit, target.tier);
+        for (const auto *prices : { &target.price, &target.statTrak, &target.souvenir })
+        {
+            for (uint64_t price : *prices)
+            {
+                catalog += std::format("{},", price);
             }
         }
-        else if (state.target) {
-            const tier = CATALOG[state.target.index * STRIDE + 2];
-            Tile(row, Faux(state.target.index), tier, Name(state.target.index), null, true, TargetLine(state.target, 0));
-            if (bet && TargetPrice() <= bet)
-                Text(ui.middle, T('csgc_upgrade_too_cheap', 'The target has to cost more than the bet'), { fontSize: '15px', color: '#e07f7f', horizontalAlign: 'center' });
-        }
-        else {
-            Text(ui.middle, T('csgc_upgrade_pick_target', 'Pick the skin you want on the right'), { fontSize: '15px', color: '#ffffff88', horizontalAlign: 'center' });
-        }
-        if (CURRENCY && !state.result && (bet || state.target))
-            Text(ui.middle, (Money(bet) || '0') + '  →  ' + (Money(TargetPrice()) || '?'), { fontSize: '18px', color: '#e8c060', horizontalAlign: 'center', margin: '4px 0px 0px 0px' });
-        const go = Btn(ui.middle, state.busy ? T('csgc_upgrade_wait', 'Rolling...') : T('csgc_upgrade_go', 'Upgrade'), Go,
-            { width: '100%', height: '56px', margin: '10px 0px', backgroundColor: chance > 0 && !state.busy ? '#4b9e3fcc' : '#ffffff14' });
-        go.enabled = chance > 0 && !state.busy;
     }
-    function RenderPick(filters, items) {
-        Text(filters, T('csgc_upgrade_your_items', 'Your skins'), { fontSize: '18px', margin: '4px' });
-        const all = InventoryItems();
-        const skipped = { id: 0, slot: 0, stock: 0, price: 0, deposit: 0 };
-        all.forEach((id) => {
-            const reason = Reject(id) || (state.deposits.indexOf(id) >= 0 ? 'deposit' : '');
-            if (reason) {
-                skipped[reason]++;
-                return;
-            }
-            items.push({ id: id, tier: TierOf(id), name: InventoryAPI.GetItemName(id), price: ItemPrice(id), pick: () => {
-                if (state.busy)
-                    return;
-                state.deposits.push(id);
-                if (state.deposits.length >= MAX_DEPOSITS)
-                    state.picking = false;
-                state.result = null;
-                state.note = '';
-                Render();
-            } });
-        });
-        items.forEach((item) => { item.sub = Money(item.price); });
-        items.sort((a, b) => (b.price - a.price) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-        if (!items.length) {
-            // say why in words, so a screenshot tells what's wrong. The base guns (faux ids, one
-            // per weapon, 'id') are in every category list and don't count
-            const words = { stock: T('csgc_upgrade_skip_stock', 'stock'), price: T('csgc_upgrade_skip_price', 'without a market price'),
-                deposit: T('csgc_upgrade_skip_deposit', 'in the bet'), slot: T('csgc_upgrade_skip_other', 'other') };
-            const why = T('csgc_upgrade_guns_owned', 'skins in the inventory') + ': ' + (all.length - skipped.id) +
-                Object.keys(words).filter((k) => skipped[k]).map((k) => ', ' + words[k] + ' ' + skipped[k]).join('');
-            Text(filters, T('csgc_upgrade_no_guns', 'No skins with a market price to put in') + ' (' + why + ')', { fontSize: '15px', color: '#ffffff88', margin: '4px' });
-            $.Msg('[csgc upgrader] deposit list empty: ' + all.length + ' listed, ' + JSON.stringify(skipped) + '\n');
-        }
-    }
-    function Toggle(active) {
-        return { backgroundColor: active ? '#ffffff40' : '#ffffff14' };
-    }
-    function RenderTargets(filters, items) {
-        const bet = BetValue();
-        Btn(filters, T('csgc_upgrade_any', 'Any'), () => { state.tier = 0; state.page = 0; Render(); }, Toggle(state.tier === 0));
-        for (let t = 1; t <= 7; t++) {
-            const tier = t;
-            Btn(filters, '', () => { state.tier = state.tier === tier ? 0 : tier; state.page = 0; Render(); },
-                { width: '30px', height: '30px', backgroundColor: COLORS[t] + (state.tier === t ? 'ff' : '50') });
-        }
-        [['all', T('csgc_upgrade_all', 'All')], ['guns', T('csgc_upgrade_guns', 'Guns')], ['knives', T('csgc_upgrade_knives', 'Knives')], ['gloves', T('csgc_upgrade_gloves', 'Gloves')]].forEach((kind) => {
-            Btn(filters, kind[1], () => { state.kind = kind[0]; state.page = 0; Render(); }, Toggle(state.kind === kind[0]));
-        });
-        if (state.deposits.length) {
-            Btn(filters, T('csgc_upgrade_same', 'Same weapon'), () => {
-                state.same = !state.same;
-                state.page = 0;
-                if (state.same) {
-                    // the deposit's weapon in every kind and rarity (knives + a gun's def is nothing)
-                    state.kind = 'all';
-                    state.tier = 0;
-                }
-                Render();
-            }, Toggle(state.same));
-        }
-        Btn(filters, 'StatTrak™', () => { state.statTrak = !state.statTrak; state.page = 0; Render(); }, Toggle(state.statTrak));
-        if (bet) {
-            // how many times the bet the target costs at least: x2 starts the list at about 50%
-            MULTIPLIERS.forEach((m) => {
-                Btn(filters, 'x' + m, () => { state.multiplier = state.multiplier === m ? 0 : m; state.page = 0; Render(); }, Toggle(state.multiplier === m));
-            });
-        }
-        const min = bet ? Math.max(bet + 1, state.multiplier ? Math.ceil(bet * state.multiplier) : 0) : 1;
-        const firstDef = state.deposits.length ? Number(InventoryAPI.GetItemDefinitionIndex(state.deposits[0])) : -1;
-        const kind = state.statTrak ? 1 : 0;
-        for (let i = 0; i < COUNT; i++) {
-            const base = i * STRIDE;
-            const def = CATALOG[base];
-            if ((state.tier && CATALOG[base + 2] !== state.tier) || (state.kind !== 'all' && Kind(def) !== state.kind) || (state.same && def !== firstDef))
-                continue;
-            for (let w = 0; w < 5; w++) {
-                const price = CATALOG[base + 3 + kind * 5 + w];
-                if (price && price >= min)
-                    items.push({ index: i, wear: w, st: state.statTrak, price: price, tier: CATALOG[base + 2] });
-            }
-        }
-        // cheapest first: from the multiplier's chance down
-        items.sort((a, b) => (a.price - b.price) || (a.index - b.index) || (a.wear - b.wear));
-        if (!items.length) {
-            const text = bet ? T('csgc_upgrade_no_dearer', 'Nothing dearer than the bet with these filters: turn a filter or the multiplier off')
-                : T('csgc_upgrade_no_targets', 'No targets with these filters: pick another rarity or turn a filter off');
-            Text(filters, text + ' (' + state.kind + ', tier ' + (state.tier || 'any') + (state.same ? ', def ' + firstDef : '') +
-                (state.statTrak ? ', StatTrak' : '') + (state.multiplier ? ', x' + state.multiplier : '') + ')',
-                { fontSize: '15px', color: '#ffffff88', margin: '4px', width: '100%' });
-        }
-        return bet;
-    }
-)JS"
-    R"JS(    function RenderRight() {
-        ui.right.RemoveAndDeleteChildren();
-        const filters = Box(ui.right, 'right-wrap', { width: '100%' });
-        const items = [];
-        const bet = state.picking ? 0 : RenderTargets(filters, items);
-        if (state.picking)
-            RenderPick(filters, items);
-        const pages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
-        if (state.page >= pages)
-            state.page = pages - 1;
-        const grid = Box(ui.right, 'right-wrap', { width: '100%', height: 'fill-parent-flow(1.0)', overflow: 'squish scroll' });
-        items.slice(state.page * PAGE_SIZE, (state.page + 1) * PAGE_SIZE).forEach((item) => {
-            if (state.picking) {
-                Tile(grid, item.id, item.tier, item.name, item.pick, false, item.sub);
-                return;
-            }
-            // a target: the skin in one wear, what it costs and the chance for the bet
-            const target = { index: item.index, wear: item.wear, st: item.st };
-            const selected = !!state.target && state.target.index === item.index && state.target.wear === item.wear && state.target.st === item.st;
-            Tile(grid, Faux(item.index), item.tier, Name(item.index), () => {
-                if (state.busy)
-                    return;
-                state.target = target;
-                state.result = null;
-                Render();
-            }, selected, TargetLine(target, bet));
-        });
-        const nav = Box(ui.right, 'right', { horizontalAlign: 'center' });
-        Btn(nav, '<', () => { if (state.page > 0) { state.page--; Render(); } });
-        Text(nav, (state.page + 1) + ' / ' + pages + '   (' + items.length + ')', { margin: '8px 14px' });
-        Btn(nav, '>', () => { if (state.page + 1 < pages) { state.page++; Render(); } });
-    }
-    function Go() {
-        const chance = Chance();
-        if (state.busy || chance <= 0)
-            return;
-        UiToolkitAPI.ShowGenericPopupOkCancel(T('csgc_upgrade_title', 'Upgrader'),
-            T('csgc_upgrade_confirm', 'The skins you put in burn if it fails. Go?') + ' ' + T('csgc_upgrade_chance', 'Chance') + ': ' + Percent(chance) +
-            (CURRENCY ? ' (' + Money(BetValue()) + ' → ' + Money(TargetPrice()) + ')' : ''), '', Send, () => { });
-    }
-    function Send() {
-        // listed ones first: a burnt deposit is noticed by its absence from the inventory lists
-        const listed = {};
-        InventoryItems().forEach((id) => { listed[id] = true; });
-        const deposits = state.deposits.slice().sort((a, b) => (listed[b] ? 1 : 0) - (listed[a] ? 1 : 0));
-        const target = state.target;
-        // catalog index * 16 + wear * 2 + StatTrak, plus 1 (0 is no target)
-        const code = target.index * 16 + target.wear * 2 + (target.st ? 1 : 0) + 1;
-        state.spinChance = Chance();
-        const before = {};
-        const count = InventoryAPI.GetUnacknowledgeItemsCount();
-        for (let i = 0; i < count; i++)
-            before[InventoryAPI.GetUnacknowledgeItemByIndex(i)] = true;
-        state.busy = true;
-        state.picking = false;
-        state.result = null;
-        state.note = '';
-        SetWheel(state.spinChance);
-        Render();
-        const updatesBefore = state.updates;
-        HoldReveal();
-        deposits.forEach((id) => InventoryAPI.SetItemAttributeValueAsync(id, 'upgrade threshold', code));
-        InventoryAPI.SetItemAttributeValueAsync(deposits[0], 'upgrade level', deposits.length);
-        // the gc's answer comes as an inventory update: the deposits are gone (rolled) or still there
-        // (refused, the gc sends the first one back unchanged). An update can come before the
-        // answer, so a deposit still there counts as refused only after a second of updates
-        let tries = 0;
-        let sinceUpdate = 0;
-        let sinceGone = 0;
-        const poll = () => {
-            tries++;
-            KeepAlert();
-            if (state.updates === updatesBefore) {
-                if (tries < 100) {
-                    $.Schedule(0.1, poll);
-                    return;
-                }
-                state.busy = false;
-                Reveal();
-                state.note = T('csgc_upgrade_timeout', 'No answer from the GC, see cs2_gc\\gc_log.txt');
-                Render();
-                return;
-            }
-            const present = {};
-            InventoryItems().forEach((id) => { present[id] = true; });
-            if (present[deposits[0]]) {
-                if (++sinceUpdate < 10) {
-                    $.Schedule(0.1, poll);
-                    return;
-                }
-                state.busy = false;
-                Reveal();
-                state.deposits = state.deposits.filter((id) => present[id] && CanDeposit(id));
-                state.note = T('csgc_upgrade_refused', 'The GC refused, see cs2_gc\\gc_log.txt');
-                Render();
-                return;
-            }
-            let won = '';
-            const now = InventoryAPI.GetUnacknowledgeItemsCount();
-            for (let i = 0; i < now; i++) {
-                const id = InventoryAPI.GetUnacknowledgeItemByIndex(i);
-                if (!before[id])
-                    won = id;
-            }
-            // the won skin comes in its own message right after the burnt ones: a moment more
-            // before it counts as lost
-            if (!won && ++sinceGone < 4) {
-                $.Schedule(0.1, poll);
-                return;
-            }
-            state.deposits = [];
-            Spin(!!won, () => {
-                state.busy = false;
-                state.result = { won: won };
-                Render();
-                $.Schedule(REVEAL_DELAY, Reveal);
-            });
-        };
-        $.Schedule(0.1, poll);
-    }
-    function Show() {
-        if (!ui)
-            Build(panel);
-        Render();
-    }
-    function Install(contextPanel, inventoryMain, navigate) {
-        const tabs = contextPanel.FindChildInLayoutFile('id-navbar-tabs-catagory-btns-container');
-        const content = inventoryMain.FindChildInLayoutFile('InventoryMenuContent');
-        if (!tabs || !content) {
-            $.Msg('[csgc upgrader] no inventory tabs to join\n');
-            return;
-        }
-        if (content.FindChildInLayoutFile('csgc_upgrader'))
-            return;
-        const button = $.CreatePanel('RadioButton', tabs, 'csgc_upgrader_tab', { class: 'content-navbar__tabs__btn', group: 'inv-top-nav' });
-        $.CreatePanel('Label', button, '', { text: '#csgc_upgrade_title' });
-        panel = $.CreatePanel('Panel', content, 'csgc_upgrader', { class: 'inv-category' });
-        // like the game's own tabs: once faded out it stops being visible, or it would take the clicks
-        $.RegisterEventHandler('PropertyTransitionEnd', panel, (panelName, propertyName) => {
-            if (propertyName === 'opacity' && panel.visible === true && panel.BIsTransparent()) {
-                panel.visible = false;
-                return true;
-            }
-            return false;
-        });
-        const open = () => {
-            navigate('csgc_upgrader');
-            try {
-                Show();
-            }
-            catch (e) {
-                $.Msg('[csgc upgrader] ' + e + '\n' + e.stack + '\n');
-            }
-        };
-        button.SetPanelEvent('onactivate', open);
-        inventoryMain.Data().csgcUpgrade = (id) => {
-            if (!state.busy && state.deposits.indexOf(id) < 0 && state.deposits.length < MAX_DEPOSITS) {
-                const reason = Reject(id);
-                if (!reason) {
-                    state.deposits.push(id);
-                    state.result = null;
-                    state.picking = false;
-                    state.note = '';
-                }
-                else {
-                    state.note = reason === 'price' ? T('csgc_upgrade_no_price', 'This skin has no market price in its wear, it can\'t go in')
-                        : T('csgc_upgrade_cant', 'This item can\'t go in the upgrader');
-                }
-            }
-            button.checked = true;
-            open();
-        };
-        $.RegisterForUnhandledEvent('PanoramaComponent_MyPersona_InventoryUpdated', () => {
-            state.updates++;
-            prices = {};
-            if (state.hold) {
-                // the main menu sets the count on this same update, before or after this
-                KeepAlert();
-                $.Schedule(0.0, KeepAlert);
-            }
-            if (!ui || state.busy || !panel.BHasClass('Active'))
-                return;
-            if (state.deposits.length) {
-                const present = {};
-                InventoryItems().forEach((id) => { present[id] = true; });
-                state.deposits = state.deposits.filter((id) => present[id]);
-            }
-            Render();
-        });
-    }
-    return { Install: Install };
-})();
-)JS";
+    return catalog;
+}
+
 
 // where it goes into mainmenu_inventory: the module at the top, the tab after the game's own
-static constexpr std::string_view UpgraderInstall = R"JS(try {
-            CsgcUpgrader.Install($.GetContextPanel(), _m_elInventoryMain, NavigateToTab);
-        }
-        catch (e) {
-            $.Msg('[csgc upgrader] ' + e + '\n' + e.stack + '\n');
-        }
-        )JS";
 
-// built-in localization: the menu entry and the window (english for every language but russian)
-struct BuiltInToken
-{
-    std::string_view name;
-    std::string_view english;
-    std::string_view russian;
-};
-
-static constexpr BuiltInToken BuiltInTokens[] = {
-    { "inv_context_csgc_upgrade", "Upgrade", "Апгрейд" },
-    { "csgc_upgrade_title", "Upgrader", "Апгрейдер" },
-    { "csgc_upgrade_close", "Close", "Закрыть" },
-    { "csgc_upgrade_rule", "1:10 per rarity step, the chances of several skins add up. The skins burn if it fails.",
-        "1:10 за каждую ступень редкости, шансы нескольких скинов складываются. При неудаче скины сгорают." },
-    { "csgc_upgrade_rule_prices", "Chance = what the bet is worth / the target's price, the target has to cost more. The skins burn if it fails. Prices:",
-        "Шанс = стоимость ставки / цена цели, цель должна быть дороже. При неудаче скины сгорают. Цены:" },
-    { "csgc_upgrade_rub", "RUB", "руб." },
-    { "csgc_upgrade_deposit", "Your skins", "Ставка" },
-    { "csgc_upgrade_add", "Add a skin", "Добавить скин" },
-    { "csgc_upgrade_back", "Back to the targets", "Назад к целям" },
-    { "csgc_upgrade_target", "Target", "Цель" },
-    { "csgc_upgrade_pick_target", "Pick the skin you want on the right", "Выбери справа скин, который хочешь получить" },
-    { "csgc_upgrade_chance", "Chance", "Шанс" },
-    { "csgc_upgrade_go", "Upgrade", "Апгрейд" },
-    { "csgc_upgrade_wait", "Rolling...", "Крутим..." },
-    { "csgc_upgrade_confirm", "The skins you put in burn if it fails. Go?", "Если не повезёт, поставленные скины сгорят. Крутим?" },
-    { "csgc_upgrade_won", "You got it!", "Повезло!" },
-    { "csgc_upgrade_lost", "No luck, the skins are gone", "Не повезло, скины сгорели" },
-    { "csgc_upgrade_timeout", "No answer from the GC, see cs2_gc\\\\gc_log.txt", "GC не ответил, смотри cs2_gc\\\\gc_log.txt" },
-    { "csgc_upgrade_your_items", "Your skins", "Твои скины" },
-    { "csgc_upgrade_any", "Any", "Любая" },
-    { "csgc_upgrade_all", "All", "Все" },
-    { "csgc_upgrade_guns", "Guns", "Оружие" },
-    { "csgc_upgrade_knives", "Knives", "Ножи" },
-    { "csgc_upgrade_gloves", "Gloves", "Перчатки" },
-    { "csgc_upgrade_same", "Same weapon", "То же оружие" },
-    { "csgc_upgrade_too_cheap", "The target has to cost more than the bet", "Цель должна быть дороже ставки" },
-    { "csgc_upgrade_no_targets", "No targets with these filters: pick another rarity or turn a filter off",
-        "Нет целей с такими фильтрами: выбери другую редкость или сними фильтр" },
-    { "csgc_upgrade_no_dearer", "Nothing dearer than the bet with these filters: turn a filter or the multiplier off",
-        "С такими фильтрами нет ничего дороже ставки: сними фильтр или множитель" },
-    { "csgc_upgrade_no_guns", "No skins with a market price to put in", "Нет скинов с ценой на маркете для ставки" },
-    { "csgc_upgrade_no_price", "This skin has no market price in its wear, it can't go in",
-        "У этого скина нет цены на маркете в таком износе, его нельзя поставить" },
-    { "csgc_upgrade_cant", "This item can't go in the upgrader", "Этот предмет нельзя поставить в апгрейдер" },
-    { "csgc_upgrade_guns_owned", "skins in the inventory", "скинов в инвентаре" },
-    { "csgc_upgrade_skip_stock", "stock", "стандартных" },
-    { "csgc_upgrade_skip_price", "without a market price", "без цены на маркете" },
-    { "csgc_upgrade_skip_deposit", "in the bet", "уже в ставке" },
-    { "csgc_upgrade_skip_other", "other", "прочих" },
-    { "csgc_upgrade_refused", "The GC refused, see cs2_gc\\\\gc_log.txt", "GC отказал, смотри cs2_gc\\\\gc_log.txt" },
-};
-
-static void ApplyBuiltInTokens(const std::string &gameVpk, std::vector<VpkFile> &out)
-{
-    for (const std::string &language : GetConfig().m_modLanguages)
-    {
-        std::string path = std::format("resource/csgo_{}.txt", language);
-        std::string text;
-        auto it = std::find_if(out.begin(), out.end(), [&](const VpkFile &file) { return file.path == path; });
-        if (it != out.end())
-        {
-            text = std::move(it->data);
-            out.erase(it);
-        }
-        else
-        {
-            std::vector<char> data;
-            if (!VpkReadFile(gameVpk, path, data))
-            {
-                continue;
-            }
-            text.assign(data.begin(), data.end());
-        }
-
-        std::string custom = "\"lang\"\n{\n\t\"Tokens\"\n\t{\n";
-        for (const BuiltInToken &token : BuiltInTokens)
-        {
-            custom += std::format("\t\t\"{}\"\t\"{}\"\n", token.name, language == "russian" ? token.russian : token.english);
-        }
-        custom += "\t}\n}\n";
-
-        MergeReport report;
-        std::string error;
-        std::string merged = text;
-        if (MergeSections(merged, custom, MergeMode::OverrideExisting, report, error))
-        {
-            text = std::move(merged);
-        }
-        else
-        {
-            Platform::Print("CSForge: built-in texts not merged into {}: {}\n", path, error);
-        }
-        out.push_back({ std::move(path), std::move(text) });
-    }
-}
 
 size_t ApplyPanoramaFixes(const std::string &gameVpk, std::vector<VpkFile> &out)
 {
@@ -1699,52 +1080,19 @@ size_t ApplyPanoramaFixes(const std::string &gameVpk, std::vector<VpkFile> &out)
         fixes.push_back({ fix.path, { { fix.anchor, std::string{ fix.code } } }, std::string{ fix.what } });
     }
 
-    if (!s_upgraderCatalog.empty())
-    {
-        // def, paint kit, tier, then the prices: 5 plain, 5 StatTrak, 5 souvenir (the window's STRIDE)
-        std::string catalog;
-        catalog.reserve(s_upgraderCatalog.size() * 80);
-        for (const UpgradeTarget &target : s_upgraderCatalog)
-        {
-            catalog += std::format("{},{},{},", target.defIndex, target.paintKit, target.tier);
-            for (const auto *prices : { &target.price, &target.statTrak, &target.souvenir })
-            {
-                for (uint64_t price : *prices)
-                {
-                    catalog += std::format("{},", price);
-                }
-            }
-        }
-        std::string module{ UpgraderModule };
-        module.replace(module.find("@CATALOG@"), 9, catalog);
-        module.replace(module.find("@CURRENCY@"), 10, s_upgraderCurrency);
-        module.replace(module.find("@PRICE_TIME@"), 12, std::to_string(s_upgraderPriceTime));
-
-        fixes.push_back({ "panorama/scripts/common/item_context_entries.vts_c",
-            { { "{\n            name: 'tradeup_add',", std::string{ UpgraderMenuEntry } } },
-            "Upgrade in the context menu of a skin" });
-        fixes.push_back({ "panorama/scripts/mainmenu_inventory.vts_c",
-            {
-                { "var InventoryPanel;\n(function (InventoryPanel) {", std::move(module) },
-                { "_InitMarketLink();\n        _InitXrayBtn();", std::string{ UpgraderInstall } },
-            },
-            std::format("the Upgrader tab in the inventory ({} skins, {})", s_upgraderCatalog.size(),
-                s_upgraderCurrency.empty() ? std::string{ "chances by rarity" } : s_upgraderCurrency + " prices") });
-    }
-
     size_t applied = 0;
     for (const Fix &fix : fixes)
     {
         if (std::any_of(out.begin(), out.end(), [&](const VpkFile &file) { return file.path == fix.path; }))
         {
-            Platform::Print("CSForge: a mod ships {}, fix not applied ({})\n", fix.path, fix.what);
+            Problem({}, false, std::format("built-in fix not applied, a mod ships its own {}: {}", fix.path, fix.what));
             continue;
         }
 
         std::vector<char> data;
         if (!VpkReadFile(gameVpk, fix.path, data))
         {
-            Platform::Print("CSForge: {} not found in the game files, fix not applied\n", fix.path);
+            Problem({}, false, std::format("built-in fix not applied, {} isn't in the game files: {}", fix.path, fix.what));
             continue;
         }
 
@@ -1761,7 +1109,7 @@ size_t ApplyPanoramaFixes(const std::string &gameVpk, std::vector<VpkFile> &out)
         }
         if (!patched)
         {
-            Platform::Print("CSForge: {}: {}, fix not applied ({})\n", fix.path, error, fix.what);
+            Problem({}, false, std::format("built-in fix not applied, the game's {} changed ({}): {}", fix.path, error, fix.what));
             continue;
         }
 
@@ -1772,9 +1120,224 @@ size_t ApplyPanoramaFixes(const std::string &gameVpk, std::vector<VpkFile> &out)
     return applied;
 }
 
+// a compiled Source 2 file (*_c) whose header and block table make sense: uint32 size, uint16 header
+// version 12, uint16 type version, uint32 block table offset 8, uint32 block count, then per block
+// char[4] type, uint32 offset (from where it's stored), uint32 size. The size can be less than the
+// file (textures and sounds keep their data after the blocks). True for every *_c of the game
+// (checked on 2500 of pak01): a file that fails is no such file or a damaged one, and the client may
+// crash on it
+static bool ValidResource(std::string_view data)
+{
+    auto read32 = [&](size_t at) {
+        uint32_t value;
+        memcpy(&value, data.data() + at, 4);
+        return value;
+    };
+
+    if (data.size() < 16)
+    {
+        return false;
+    }
+
+    uint16_t headerVersion;
+    memcpy(&headerVersion, data.data() + 4, 2);
+    uint32_t size = read32(0), blockOffset = read32(8), blockCount = read32(12);
+    if (headerVersion != 12 || size < 16 || size > data.size() || blockOffset != 8 || blockCount > 64 || 16 + blockCount * 12ull > data.size())
+    {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < blockCount; i++)
+    {
+        size_t at = 16 + i * 12;
+        if (at + 4 + static_cast<uint64_t>(read32(at + 4)) + read32(at + 8) > data.size())
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// a file of a mod named in its panorama.txt: inside the mod's folder only
+static bool ReadModTextFile(const ModInfo &mod, std::string_view name, std::string &text)
+{
+    if (name.empty() || name.find("..") != std::string_view::npos || name.find(':') != std::string_view::npos
+        || name.front() == '/' || name.front() == '\\')
+    {
+        return false;
+    }
+    std::string path{ name };
+    std::replace(path.begin(), path.end(), '/', '\\');
+    return ReadWholeFile(ModPath(mod, path), text);
+}
+
+// the mods' panorama.txt patches, after the built-in fixes: on top of what's going into the vpk
+// already (a fixed script, another mod's patch or a whole file of a mod), else the game's file
+static void ApplyModPanoramaPatches(const std::vector<const ModInfo *> &enabled, std::vector<VpkFile> &out)
+{
+    for (const ModInfo *mod : enabled)
+    {
+        std::string infoPath = ModPath(*mod, "panorama.txt");
+        if (!FileExists(infoPath))
+        {
+            continue;
+        }
+
+        KeyValueRead info{ infoPath.c_str() };
+        const KeyValue *patches = info.Complete() ? info.Root().GetSubkey("panorama") : nullptr;
+        if (!patches)
+        {
+            Problem(mod->folder, true, "panorama.txt doesn't parse (expected \"panorama\" { \"1\" { ... } }), none of its patches is applied");
+            continue;
+        }
+
+        // "needs" "upgrader 1": the parts of cs2_gc the mod's code talks to, in the version it was made for
+        std::string mismatch;
+        std::string_view needs = patches->GetString("needs");
+        for (auto word = needs.begin(); word != needs.end();)
+        {
+            auto end = std::find(word, needs.end(), ' ');
+            std::string_view name{ word, end };
+            auto numberEnd = end == needs.end() ? end : std::find(end + 1, needs.end(), ' ');
+            std::string_view number = end == needs.end() ? std::string_view{} : std::string_view{ end + 1, numberEnd };
+            if (!name.empty())
+            {
+                int have = name == "upgrader" ? UpgraderVersion : 0;
+                if (!have)
+                {
+                    mismatch += std::format("{}'{}', which this cs2_gc doesn't have", mismatch.empty() ? "" : "; ", name);
+                }
+                else if (number != std::to_string(have))
+                {
+                    mismatch += std::format("{}{} {}, this cs2_gc has {} {}", mismatch.empty() ? "" : "; ", name,
+                        number.empty() ? "?" : number, name, have);
+                }
+            }
+            word = numberEnd == needs.end() ? needs.end() : numberEnd + 1;
+        }
+        if (!mismatch.empty())
+        {
+            Problem(mod->folder, true, std::format("made for another version of cs2_gc ({}): none of its panorama.txt patches is "
+                                                   "applied. Get the mod's version for this cs2_gc", mismatch));
+            continue;
+        }
+
+        for (const KeyValue &entry : patches->Subkeys())
+        {
+            if (entry.Subkeys().empty())
+            {
+                continue; // "needs" and the like
+            }
+            std::string what = std::format("panorama.txt patch {}", entry.Name());
+            std::string path = Lower(entry.GetString("file"));
+            std::replace(path.begin(), path.end(), '\\', '/');
+            std::string anchor, code;
+            if (path.empty() || !path.ends_with("_c"))
+            {
+                Problem(mod->folder, true, what + ": \"file\" has to be a compiled game file (panorama/scripts/....vts_c)");
+                continue;
+            }
+            if (!ReadModTextFile(*mod, entry.GetString("anchor"), anchor) || !ReadModTextFile(*mod, entry.GetString("code"), code))
+            {
+                Problem(mod->folder, true, what + ": its \"anchor\" or \"code\" file isn't in the mod's folder");
+                continue;
+            }
+
+            // the game's scripts end lines with \n, git on Windows may have checked the files out with \r\n
+            for (std::string *text : { &anchor, &code })
+            {
+                text->erase(std::remove(text->begin(), text->end(), '\r'), text->end());
+            }
+            // editors end a file with a newline the script may not have after the anchor
+            if (anchor.ends_with("\n"))
+            {
+                anchor.pop_back();
+            }
+
+            // values of cs2_gc the code asks for: @csforge:<name>@
+            std::string unknown;
+            for (size_t at = code.find("@csforge:"); at != std::string::npos; at = code.find("@csforge:", at))
+            {
+                size_t end = code.find('@', at + 9);
+                std::string name = end == std::string::npos ? std::string{} : code.substr(at + 9, end - at - 9);
+                if (name.starts_with("upgrader_") && !s_upgraderBuilt)
+                {
+                    s_upgraderBuilt = true;
+                    Platform::Print("CSForge: upgrader: {} targets ({})\n", BuildUpgraderCatalog(),
+                        s_upgraderCurrency.empty() ? std::string{ "chances by rarity" } : s_upgraderCurrency + " prices");
+                }
+                std::string value;
+                if (name == "upgrader_catalog")
+                {
+                    value = UpgraderCatalogText();
+                }
+                else if (name == "upgrader_currency")
+                {
+                    value = s_upgraderCurrency;
+                }
+                else if (name == "upgrader_price_time")
+                {
+                    value = std::to_string(s_upgraderPriceTime);
+                }
+                else
+                {
+                    unknown = name.empty() ? std::string{ "@csforge: without its closing @" } : "@csforge:" + name + "@";
+                    break;
+                }
+                code.replace(at, end + 1 - at, value);
+                at += value.size();
+            }
+            if (!unknown.empty())
+            {
+                Problem(mod->folder, true, std::format("{}: this cs2_gc has no value {}, not applied", what, unknown));
+                continue;
+            }
+
+            auto existing = std::find_if(out.begin(), out.end(), [&](const VpkFile &file) { return file.path == path; });
+            std::string file;
+            if (existing != out.end())
+            {
+                file = existing->data;
+            }
+            else
+            {
+                std::vector<char> data;
+                if (!VpkReadFile(Platform::GamePath("pak01_dir.vpk"), path, data))
+                {
+                    Problem(mod->folder, true, std::format("{}: {} isn't in the game files", what, path));
+                    continue;
+                }
+                file.assign(data.begin(), data.end());
+            }
+
+            std::string error;
+            if (!PatchResourceText(file, anchor, code, error))
+            {
+                Problem(mod->folder, true, std::format("{}: not applied to {} ({}); the game's script may have changed", what, path, error));
+                continue;
+            }
+
+            if (existing != out.end())
+            {
+                existing->data = std::move(file);
+            }
+            else
+            {
+                out.push_back({ path, std::move(file) });
+            }
+            Platform::Print("CSForge: {}: {} applied to {}\n", mod->folder, what, path);
+        }
+    }
+}
+
 bool Build()
 {
     s_builtVpk.clear();
+    s_upgraderCatalog.clear(); // made again if an enabled mod asks for it (the upgrader mod)
+    s_upgraderIndex.clear();
+    s_upgraderCurrency.clear();
+    s_upgraderPriceTime = 0;
+    s_upgraderBuilt = false;
 
     std::string buildDir = Platform::DataPath("mods") + "\\" + BuildFolder;
     std::error_code ec;
@@ -1783,11 +1346,16 @@ bool Build()
     std::vector<ModInfo> mods = ListMods();
     std::vector<const ModInfo *> enabled;
     s_loadedState.clear();
+    s_problems.clear();
     for (const ModInfo &mod : mods)
     {
         s_loadedState[mod.folder] = { mod.enabled, mod.priority };
         Platform::Print("CSForge: {} '{}' {} priority {}{}\n", mod.folder, mod.name, mod.version,
             mod.priority, mod.enabled ? "" : " (disabled)");
+        if (mod.infoBroken)
+        {
+            Problem(mod.folder, false, "mod.txt doesn't parse (expected \"mod\" { ... }): the name, state and priority are the defaults");
+        }
         if (mod.enabled)
         {
             enabled.push_back(&mod);
@@ -1823,7 +1391,17 @@ bool Build()
         VpkFile file{ path, {} };
         if (ReadWholeFile(PathUtf8(source.path), file.data))
         {
+            if (path.ends_with("_c") && !ValidResource(file.data))
+            {
+                Problem(source.mod->folder, true, std::format("files\\{} isn't a compiled game file or it's damaged, "
+                                                              "left out (the game could crash on it)", path));
+                continue;
+            }
             out.push_back(std::move(file));
+        }
+        else
+        {
+            Problem(source.mod->folder, true, std::format("files\\{} can't be read, it isn't in the game", path));
         }
     }
 
@@ -1848,10 +1426,14 @@ bool Build()
         return true;
     };
 
+    // game file -> "paint_kits/20001" -> the mod that added it, to say who a skipped id lost to
+    std::map<std::string, std::map<std::string, std::string>> addedBy;
+
     auto mergeInto = [&](std::string_view gameFile, MergeMode mode, auto &&modFileFor) {
         std::string text;
         bool loaded = false;
         bool changed = false;
+        auto &owners = addedBy[std::string{ gameFile }];
 
         for (const ModInfo *mod : enabled)
         {
@@ -1866,7 +1448,7 @@ bool Build()
             {
                 if (!baseText(gameFile, text))
                 {
-                    Platform::Print("CSForge: {} not found in the game files\n", gameFile);
+                    Problem(mod->folder, true, std::format("{} isn't merged: {} not found in the game files", modFile, gameFile));
                     return;
                 }
                 loaded = true;
@@ -1877,7 +1459,7 @@ bool Build()
             std::string merged = text;
             if (!MergeSections(merged, custom, mode, report, error))
             {
-                Platform::Print("CSForge: {}\\{} not merged into {}: {}\n", mod->folder, modFile, gameFile, error);
+                Problem(mod->folder, true, std::format("{} isn't merged into {}, nothing of it is in the game: {}", modFile, gameFile, error));
                 continue;
             }
 
@@ -1887,7 +1469,26 @@ bool Build()
                 report.added, report.overridden.size(), report.skipped.size());
             for (const std::string &skipped : report.skipped)
             {
-                Platform::Print("CSForge:   skipped {} (already defined)\n", skipped);
+                if (mode == MergeMode::OverrideExisting)
+                {
+                    Problem(mod->folder, false, std::format("{}: {} isn't replaced (a block where the game has a text, "
+                                                            "or the file sets it twice)", modFile, skipped));
+                    continue;
+                }
+                if (mode == MergeMode::DeepOverride)
+                {
+                    Problem(mod->folder, false, std::format("{}: {} isn't changed: the mod has a block where the game has "
+                                                            "a text, or the other way round", modFile, skipped));
+                    continue;
+                }
+
+                auto owner = owners.find(skipped);
+                Problem(mod->folder, false, std::format("{}: {} isn't added, {} already has it", modFile, skipped,
+                    owner != owners.end() ? "the mod " + owner->second : std::string{ "the game" }));
+            }
+            for (const std::string &added : report.addedKeys)
+            {
+                owners.try_emplace(added, mod->folder);
             }
         }
 
@@ -1898,6 +1499,7 @@ bool Build()
     };
 
     mergeInto("scripts/items/items_game.txt", MergeMode::SkipExisting, [](const ModInfo &) { return std::string{ "items_game.txt" }; });
+    mergeInto("scripts/items/items_game.txt", MergeMode::DeepOverride, [](const ModInfo &) { return std::string{ "items_game_override.txt" }; });
 
     for (const std::string &language : GetConfig().m_modLanguages)
     {
@@ -1910,11 +1512,10 @@ bool Build()
 
     if (GetConfig().m_panoramaFixes)
     {
-        std::string gameVpk = Platform::GamePath("pak01_dir.vpk");
-        Platform::Print("CSForge: upgrader: {} targets\n", BuildUpgraderCatalog());
-        ApplyBuiltInTokens(gameVpk, out);
-        ApplyPanoramaFixes(gameVpk, out);
+        ApplyPanoramaFixes(Platform::GamePath("pak01_dir.vpk"), out);
     }
+
+    ApplyModPanoramaPatches(enabled, out);
 
     if (out.empty())
     {
@@ -1924,9 +1525,10 @@ bool Build()
 
     std::filesystem::create_directories(Utf8Path(buildDir), ec);
     std::string vpkPath = buildDir + "\\" + VpkName + "_dir.vpk";
-    if (!VpkWrite(vpkPath, out))
+    std::string vpkError;
+    if (!VpkWrite(vpkPath, out, &vpkError))
     {
-        Platform::Print("CSForge: can't write {}\n", vpkPath);
+        Problem({}, true, std::format("can't write {} ({}): no mod is loaded", vpkPath, vpkError));
         return false;
     }
 
@@ -1978,6 +1580,12 @@ std::vector<ModStatus> ModStatuses()
         auto loaded = s_loadedState.find(mod.folder);
         status.changed = loaded == s_loadedState.end() || loaded->second.first != mod.enabled
             || (mod.enabled && loaded->second.second != mod.priority);
+
+        auto problems = s_problems.find(mod.folder);
+        if (problems != s_problems.end())
+        {
+            status.problems = problems->second;
+        }
 
         std::vector<std::string> paths;
         for (auto &[path, source] : files)
@@ -2107,6 +1715,225 @@ bool SetModState(std::string_view folder, bool enabled, int priority, std::strin
 
     Platform::Print("CSForge: {} set to {} priority {} (from the inventory editor, next game start)\n", mod->folder,
         enabled ? "enabled" : "disabled", priority);
+    return true;
+}
+
+// ------------------------------------------------------------------ installing and deleting from the editor
+
+constexpr const char *InstallFolder = "_install";
+constexpr const char *TrashFolder = "_trash";
+constexpr uint64_t MaxInstallBytes = 8ull << 30;
+constexpr size_t MaxInstallFiles = 50000;
+
+static std::string s_installing; // the mod folder an install is writing, empty: none
+static uint64_t s_installBytes;
+static size_t s_installFiles;
+
+// a mod folder's name as the loader takes it: one path component, not hidden from ListMods
+static bool ValidModFolder(std::string_view folder)
+{
+    if (folder.empty() || folder.size() > 64 || folder[0] == '_' || folder[0] == '.' || folder.back() == '.' || folder.back() == ' ')
+    {
+        return false;
+    }
+
+    return std::all_of(folder.begin(), folder.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ' ';
+    });
+}
+
+// a file's path inside a mod, from the editor: relative, no "..", nothing Windows reads as a drive
+// or a stream
+static bool ValidModFilePath(std::string_view path)
+{
+    if (path.empty() || path.size() > 400)
+    {
+        return false;
+    }
+
+    size_t start = 0;
+    int depth = 0;
+    while (start <= path.size())
+    {
+        size_t end = path.find('/', start);
+        std::string_view part = path.substr(start, end == std::string_view::npos ? std::string_view::npos : end - start);
+        if (part.empty() || part == "." || part == ".." || part.back() == '.' || part.back() == ' ' || ++depth > 24)
+        {
+            return false;
+        }
+
+        for (char c : part)
+        {
+            if (static_cast<unsigned char>(c) < 32 || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+            {
+                return false;
+            }
+        }
+
+        if (end == std::string_view::npos)
+        {
+            break;
+        }
+        start = end + 1;
+    }
+
+    return true;
+}
+
+static std::filesystem::path ModsPath(std::string_view folder, std::string_view inside = {})
+{
+    std::string path = Platform::DataPath("mods");
+    for (std::string_view part : { folder, inside })
+    {
+        if (!part.empty())
+        {
+            path += "\\";
+            path += part;
+        }
+    }
+    return Utf8Path(path);
+}
+
+// to <data>\mods\_trash\<folder>, replacing what the trash has under that name
+static bool MoveToTrash(std::string_view folder, std::string &error)
+{
+    std::error_code ec;
+    std::filesystem::create_directories(ModsPath(TrashFolder), ec);
+    std::filesystem::remove_all(ModsPath(TrashFolder, folder), ec);
+    std::filesystem::rename(ModsPath(folder), ModsPath(TrashFolder, folder), ec);
+    if (ec)
+    {
+        error = std::format("can't move mods\\{} to mods\\{} ({}): is a file of it open?", folder, TrashFolder, ec.message());
+        return false;
+    }
+    return true;
+}
+
+bool InstallBegin(std::string_view folder, std::string &error)
+{
+    std::error_code ec;
+    std::filesystem::remove_all(ModsPath(InstallFolder), ec);
+    s_installing.clear();
+    s_installBytes = 0;
+    s_installFiles = 0;
+
+    if (!ValidModFolder(folder))
+    {
+        error = std::format("'{}' can't be a mod folder's name (letters, digits, space, _ - . only, not starting with _ or .)", folder);
+        return false;
+    }
+
+    std::filesystem::create_directories(ModsPath(InstallFolder, folder), ec);
+    if (ec)
+    {
+        error = std::format("can't create mods\\{}\\{} ({})", InstallFolder, folder, ec.message());
+        return false;
+    }
+
+    s_installing = folder;
+    return true;
+}
+
+bool InstallWrite(std::string_view path, bool first, const void *data, size_t size, std::string &error)
+{
+    if (s_installing.empty())
+    {
+        error = "no install is going on";
+        return false;
+    }
+
+    if (!ValidModFilePath(path))
+    {
+        error = std::format("'{}' isn't a path a mod's file can have", path);
+        return false;
+    }
+
+    s_installBytes += size;
+    s_installFiles += first ? 1 : 0;
+    if (s_installBytes > MaxInstallBytes || s_installFiles > MaxInstallFiles)
+    {
+        error = "the archive is too big (over 8 GB or 50000 files)";
+        return false;
+    }
+
+    std::filesystem::path full = ModsPath(InstallFolder, s_installing) / Utf8Path(path);
+    std::error_code ec;
+    std::filesystem::create_directories(full.parent_path(), ec);
+    FILE *f = Platform::OpenFile(PathUtf8(full), first ? "wb" : "ab");
+    if (!f)
+    {
+        error = std::format("can't write {}", path);
+        return false;
+    }
+
+    bool written = fwrite(data, 1, size, f) == size;
+    written = (fclose(f) == 0) && written;
+    if (!written)
+    {
+        error = std::format("can't write {} (disk full?)", path);
+    }
+    return written;
+}
+
+bool InstallEnd(bool commit, std::string &summary, std::string &error)
+{
+    std::string folder = std::move(s_installing);
+    s_installing.clear();
+
+    std::error_code ec;
+    bool done = false;
+    if (folder.empty())
+    {
+        error = "no install is going on";
+    }
+    else if (!commit)
+    {
+        error = "stopped";
+    }
+    else if (!s_installFiles)
+    {
+        error = "the archive has no files";
+    }
+    else
+    {
+        bool replaced = std::filesystem::exists(ModsPath(folder), ec);
+        if (!replaced || MoveToTrash(folder, error))
+        {
+            std::filesystem::rename(ModsPath(InstallFolder, folder), ModsPath(folder), ec);
+            if (ec)
+            {
+                error = std::format("can't move the files to mods\\{} ({})", folder, ec.message());
+            }
+            else
+            {
+                summary = std::format("{}: {} files, {:.1f} MB{}", folder, s_installFiles, s_installBytes / 1048576.0,
+                    replaced ? std::format(", the mod that was there is in mods\\{}", TrashFolder) : std::string{});
+                Platform::Print("CSForge: installed {} (from the inventory editor, next game start)\n", summary);
+                done = true;
+            }
+        }
+    }
+
+    std::filesystem::remove_all(ModsPath(InstallFolder), ec);
+    return done;
+}
+
+bool DeleteMod(std::string_view folder, std::string &error)
+{
+    // only folders ListMods knows: the name comes from the editor's websocket
+    std::vector<ModInfo> mods = ListMods();
+    if (std::none_of(mods.begin(), mods.end(), [&](const ModInfo &m) { return m.folder == folder; }))
+    {
+        error = "no mod folder named " + std::string{ folder };
+        return false;
+    }
+
+    if (!MoveToTrash(folder, error))
+    {
+        return false;
+    }
+
+    Platform::Print("CSForge: {} moved to mods\\{} (from the inventory editor)\n", folder, TrashFolder);
     return true;
 }
 

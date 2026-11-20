@@ -1,0 +1,2 @@
+_InitMarketLink();
+        _InitXrayBtn();
