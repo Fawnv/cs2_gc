@@ -236,8 +236,4 @@ Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation.
    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=fawnv/cs2_gc&type=date&legend=top-left" />
  </picture>
-</a>
-
-## Repobeats
-
-![Alt](https://repobeats.axiom.co/api/embed/2eb7a8664116bb1b1ad2bcfaf20c052267a6eb72.svg "Repobeats analytics image")
+</a> 
