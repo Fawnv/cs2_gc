@@ -1190,8 +1190,9 @@ int wmain(int argc, wchar_t **argv)
                 kits[0], kits[1], kits[2], kits[3], kits[4], kits[5]);
         }
 
-        // scraping: the popup sends the wear to scrape the sticker to in sticker_wear (0..1 in the
-        // sticker's steps), 111 scrapes it off completely; patches have no wear and go with RemovePatch
+        // scraping: the popup sends the wear the sticker has now in sticker_wear and the wear to
+        // scrape it to (0..1) in sticker_wear_target; a complete removal sends 1.0 in sticker_wear
+        // (the 111 target is clamped to 1.0). Patches have no wear and go with RemovePatch
         {
             auto slotAttribute = [](AttributeDefIndex first, uint32_t slot, uint32_t stride) {
                 return ToEnum<AttributeDefIndex>(FromEnum(first) + slot * stride);
@@ -1219,6 +1220,16 @@ int wmain(int argc, wchar_t **argv)
             CHECK(wear(0) == 1.0f
                     && u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 0, 4)) == 8554,
                 "scrape to target wear 1.0: extreme wear, the sticker is still there");
+
+            // a complete removal sends sticker_wear = 1.0 (111 clamped to 1.0) and takes the sticker
+            // off even when it is still fresh (stored wear 0), not only when it is already at 1.0
+            scrape.set_sticker_slot(1);
+            scrape.set_sticker_wear(1.0f);
+            scrape.set_sticker_wear_target(1.0f);
+            InventoryChangeMessages freshGone = inventory.ScrapeSticker(scrape);
+            CHECK(freshGone.notification.request() == k_EGCItemCustomizationNotification_RemoveSticker
+                    && !u32(items(inventory)[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 1, 4)),
+                "remove a fresh sticker (client wear 1.0, target 1.0): it is scraped off");
 
             // the next scrape on a sticker already at extreme wear takes it off (111 clamped to 1.0)
             scrape.set_sticker_slot(0);

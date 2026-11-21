@@ -1647,21 +1647,29 @@ InventoryChangeMessages Inventory::ScrapeSticker(const CMsgApplySticker &message
 
     auto attributeStickerWear = StickerAttributeForSlot(AttributeDefIndex::StickerWear0, slot);
 
-    // cs2's scrape popup sends the wear the sticker is scraped to in sticker_wear_target (0..1 in the
-    // sticker's steps) and the wear it has now in sticker_wear, or 111
-    // ("WearItemSticker(item, slot, 111)") as the target to scrape it off completely - past any wear.
-    // csgo had no target: it sent the new wear (1.0 = off) in sticker_wear. Patches have no wear and
-    // are removed ("remove_patch" sends 0).
+    // cs2's scrape popup sends the wear the sticker has now in sticker_wear and the wear to scrape it
+    // to in sticker_wear_target. The popup's 0..100 slider is remapped to the 0..1 wear by client.dll
+    // (RemapValClamped(slider, 0, 100, 0, 1)), so the target is already 0..1. 111
+    // ("WearItemSticker(item, slot, 111)") is clamped to 1.0 by the same remap, so it cannot be told
+    // apart from a scrape to 100% by the target alone: a complete removal comes with sticker_wear =
+    // 1.0, while a scrape to 100% sends the wear the sticker has now (e.g. 0.0). csgo had no target:
+    // it sent the new wear (1.0 = off) in sticker_wear. Patches have no wear and are removed
+    // ("remove_patch" sends target 0, which is not set).
     const bool patch = !item->HasAttribute(attributeStickerWear);
-    const float targetWear = message.has_sticker_wear_target() ? message.sticker_wear_target()
+    float targetWear = message.has_sticker_wear_target() ? message.sticker_wear_target()
         : (message.has_sticker_wear() ? message.sticker_wear() : 1.0f);
-    // a scrape on a sticker already at extreme wear is the one that takes it off, even if the client
-    // sent the "off" 111 clamped to 1.0
-    const bool atExtremeWear = !patch && item->GetAttributeValue<float>(attributeStickerWear) >= 1.0f;
+    // be lenient with clients that send the raw 0..100 slider value instead of the remapped wear
+    if (targetWear > 1.0f && targetWear <= 100.0f)
+    {
+        targetWear /= 100.0f;
+    }
     const bool removeCompletely = patch
-        || (m_oldProtocol ? targetWear >= 1.0f : (targetWear > 1.0f || (targetWear >= 1.0f && atExtremeWear)));
-    Platform::Print("ScrapeSticker: item {} slot {} (stored in {}) wear {} -> target {}{}\n",
-        message.item_item_id(), message.sticker_slot(), slot, message.sticker_wear(), targetWear,
+        || (m_oldProtocol
+            ? targetWear >= 1.0f
+            : ((message.has_sticker_wear() && message.sticker_wear() >= 1.0f) || targetWear > 1.0f));
+    const float storedWear = patch ? 0.0f : item->GetAttributeValue<float>(attributeStickerWear);
+    Platform::Print("ScrapeSticker: item {} slot {} (stored in {}) stored wear {} client wear {} -> target {}{}\n",
+        message.item_item_id(), message.sticker_slot(), slot, storedWear, message.sticker_wear(), targetWear,
         removeCompletely ? " (off)" : "");
     if (!removeCompletely)
     {
