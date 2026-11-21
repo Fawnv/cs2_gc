@@ -20,7 +20,7 @@
 		"csgc_upgrade_confirm"		"Если не повезёт, поставленные скины сгорят. Крутим?"
 		"csgc_upgrade_won"		"Повезло!"
 		"csgc_upgrade_lost"		"Не повезло, скины сгорели"
-		"csgc_upgrade_timeout"		"GC не ответил, смотри cs2_gc\\gc_log.txt"
+		"csgc_upgrade_timeout"		"GC не ответил, пиши issue мне с прикладыванием cs2_gc\\gc_log.txt"
 		"csgc_upgrade_your_items"		"Твои скины"
 		"csgc_upgrade_any"		"Любая"
 		"csgc_upgrade_all"		"Все"
@@ -39,6 +39,6 @@
 		"csgc_upgrade_skip_price"		"без цены на маркете"
 		"csgc_upgrade_skip_deposit"		"уже в ставке"
 		"csgc_upgrade_skip_other"		"прочих"
-		"csgc_upgrade_refused"		"GC отказал, смотри cs2_gc\\gc_log.txt"
+		"csgc_upgrade_refused"		"GC отказал, пиши issue мне с прикладыванием cs2_gc\\gc_log.txt"
 	}
 }

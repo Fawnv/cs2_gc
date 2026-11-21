@@ -20,7 +20,7 @@
 		"csgc_upgrade_confirm"		"The skins you put in burn if it fails. Go?"
 		"csgc_upgrade_won"		"You got it!"
 		"csgc_upgrade_lost"		"No luck, the skins are gone"
-		"csgc_upgrade_timeout"		"No answer from the GC, see cs2_gc\\gc_log.txt"
+		"csgc_upgrade_timeout"		"No answer from the GC, write issue with cs2_gc\\gc_log.txt attached"
 		"csgc_upgrade_your_items"		"Your skins"
 		"csgc_upgrade_any"		"Any"
 		"csgc_upgrade_all"		"All"
@@ -39,6 +39,6 @@
 		"csgc_upgrade_skip_price"		"without a market price"
 		"csgc_upgrade_skip_deposit"		"in the bet"
 		"csgc_upgrade_skip_other"		"other"
-		"csgc_upgrade_refused"		"The GC refused, see cs2_gc\\gc_log.txt"
+		"csgc_upgrade_refused"		"The GC refused, write issue with cs2_gc\\gc_log.txt attached"
 	}
 }
