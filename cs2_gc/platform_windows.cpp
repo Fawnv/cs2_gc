@@ -41,9 +41,16 @@ static std::wstring ToWide(std::string_view utf8)
 
 void SetPaths(const wchar_t *gameBinDir, const wchar_t *gameDir, const wchar_t *dataDir)
 {
-    s_gameBinDir = gameBinDir;
-    s_gameDir = ToUtf8(gameDir);
-    s_dataDir = ToUtf8(dataDir);
+    s_gameBinDir = gameBinDir ? gameBinDir : L"";
+    s_gameDir = ToUtf8(gameDir ? gameDir : L"");
+    s_dataDir = ToUtf8(dataDir ? dataDir : L"");
+}
+
+void SetPaths(const char *gameBinDir, const char *gameDir, const char *dataDir)
+{
+    s_gameBinDir = ToWide(gameBinDir ? gameBinDir : "");
+    s_gameDir = gameDir ? gameDir : "";
+    s_dataDir = dataDir ? dataDir : "";
 }
 
 std::string DataPath(std::string_view name)
@@ -208,6 +215,11 @@ void *LoadGameLibrary(const wchar_t *name)
     path.push_back(L'\\');
     path.append(name);
     return LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+}
+
+void *LoadGameLibrary(const char *name)
+{
+    return LoadGameLibrary(ToWide(name).c_str());
 }
 
 void *GetSymbol(void *handle, const char *symbol)

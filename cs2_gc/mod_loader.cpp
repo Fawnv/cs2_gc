@@ -14,6 +14,13 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <strings.h>
+#include <dlfcn.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
 #endif
 
 namespace ModLoader
@@ -599,7 +606,16 @@ bool MergeSections(std::string &baseText, std::string_view customText, MergeMode
 
 static std::filesystem::path Utf8Path(std::string_view path)
 {
+#ifndef _WIN32
+    std::string s{ path };
+    for (char &c : s)
+    {
+        if (c == '\\') c = '/';
+    }
+    return std::filesystem::path{ std::u8string_view{ reinterpret_cast<const char8_t *>(s.data()), s.size() } };
+#else
     return std::filesystem::path{ std::u8string_view{ reinterpret_cast<const char8_t *>(path.data()), path.size() } };
+#endif
 }
 
 static std::string PathUtf8(const std::filesystem::path &path)
@@ -709,7 +725,11 @@ static void CollectModFiles(const std::filesystem::path &filesDir, std::vector<s
 
 static std::string ModPath(const ModInfo &mod, std::string_view file)
 {
+#ifdef _WIN32
     return Platform::DataPath("mods") + "\\" + mod.folder + "\\" + std::string{ file };
+#else
+    return Platform::DataPath("mods") + "/" + mod.folder + "/" + std::string{ file };
+#endif
 }
 
 // ------------------------------------------------------------------ built-in Panorama fixes
@@ -1167,7 +1187,11 @@ static bool ReadModTextFile(const ModInfo &mod, std::string_view name, std::stri
         return false;
     }
     std::string path{ name };
+#ifdef _WIN32
     std::replace(path.begin(), path.end(), '/', '\\');
+#else
+    std::replace(path.begin(), path.end(), '\\', '/');
+#endif
     return ReadWholeFile(ModPath(mod, path), text);
 }
 
@@ -1339,7 +1363,11 @@ bool Build()
     s_upgraderPriceTime = 0;
     s_upgraderBuilt = false;
 
+#ifdef _WIN32
     std::string buildDir = Platform::DataPath("mods") + "\\" + BuildFolder;
+#else
+    std::string buildDir = Platform::DataPath("mods") + "/" + BuildFolder;
+#endif
     std::error_code ec;
     std::filesystem::remove_all(Utf8Path(buildDir), ec);
 
@@ -1524,7 +1552,11 @@ bool Build()
     }
 
     std::filesystem::create_directories(Utf8Path(buildDir), ec);
+#ifdef _WIN32
     std::string vpkPath = buildDir + "\\" + VpkName + "_dir.vpk";
+#else
+    std::string vpkPath = buildDir + "/" + VpkName + "_dir.vpk";
+#endif
     std::string vpkError;
     if (!VpkWrite(vpkPath, out, &vpkError))
     {
@@ -1787,7 +1819,11 @@ static std::filesystem::path ModsPath(std::string_view folder, std::string_view 
     {
         if (!part.empty())
         {
+#ifdef _WIN32
             path += "\\";
+#else
+            path += "/";
+#endif
             path += part;
         }
     }
@@ -1939,8 +1975,6 @@ bool DeleteMod(std::string_view folder, std::string &error)
 
 // ------------------------------------------------------------------ filesystem hook
 
-#ifdef _WIN32
-
 // IFileSystem (VFileSystem017) slot 31, from engine2's gameinfo SearchPaths code:
 // AddSearchPath(path, pathID, addType, priority, unknown), addType 0 = head, 1 = tail
 constexpr int AddSearchPathSlot = 31;
@@ -2000,17 +2034,18 @@ static void Hk_AddSearchPath(void *fileSystem, const char *path, const char *pat
     }
 }
 
-static bool IsClientDll(LPCWSTR name)
-{
-    std::wstring_view view = name ? name : L"";
-    size_t slash = view.find_last_of(L"\\/");
-    std::wstring_view file = (slash == std::wstring_view::npos) ? view : view.substr(slash + 1);
-    return _wcsicmp(std::wstring{ file }.c_str(), L"client.dll") == 0;
-}
+#ifndef _WIN32
+using dlopen_t = void *(*)(const char *, int);
+static dlopen_t Og_dlopen;
+#endif
 
 static bool HookFileSystem()
 {
+#ifdef _WIN32
     HMODULE module = GetModuleHandleW(L"filesystem_stdio.dll");
+#else
+    void *module = Og_dlopen ? Og_dlopen("libfilesystem_stdio.so", RTLD_NOLOAD | RTLD_NOW) : dlopen("libfilesystem_stdio.so", RTLD_NOLOAD | RTLD_NOW);
+#endif
     if (!module)
     {
         return false;
@@ -2019,7 +2054,11 @@ static bool HookFileSystem()
     // the interface list gets filled by the dll's static constructors: while filesystem_stdio is
     // still initializing (a load nested in its own) this is null, try again on the next load
     using CreateInterface_t = void *(*)(const char *, int *);
+#ifdef _WIN32
     auto createInterface = reinterpret_cast<CreateInterface_t>(GetProcAddress(module, "CreateInterface"));
+#else
+    auto createInterface = reinterpret_cast<CreateInterface_t>(dlsym(module, "CreateInterface"));
+#endif
     void *fileSystem = createInterface ? createInterface("VFileSystem017", nullptr) : nullptr;
     if (!fileSystem)
     {
@@ -2035,6 +2074,7 @@ static bool HookFileSystem()
         return true; // already done
     }
 
+#ifdef _WIN32
     DWORD oldProtect;
     if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &oldProtect))
     {
@@ -2045,9 +2085,33 @@ static bool HookFileSystem()
     s_addSearchPath = reinterpret_cast<AddSearchPath_t>(*slot);
     *slot = reinterpret_cast<void *>(&Hk_AddSearchPath);
     VirtualProtect(slot, sizeof(void *), oldProtect, &oldProtect);
+#else
+    long pageSize = sysconf(_SC_PAGESIZE);
+    if (pageSize <= 0) pageSize = 4096;
+    uintptr_t pageStart = reinterpret_cast<uintptr_t>(slot) & ~(pageSize - 1);
+    if (mprotect(reinterpret_cast<void *>(pageStart), pageSize, PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+    {
+        Platform::Print("CSForge: can't patch the filesystem vtable\n");
+        return true;
+    }
+
+    s_addSearchPath = reinterpret_cast<AddSearchPath_t>(*slot);
+    *slot = reinterpret_cast<void *>(&Hk_AddSearchPath);
+    mprotect(reinterpret_cast<void *>(pageStart), pageSize, PROT_READ | PROT_EXEC);
+#endif
 
     Platform::Print("CSForge: hooked VFileSystem017::AddSearchPath\n");
     return true;
+}
+
+#ifdef _WIN32
+
+static bool IsClientDll(LPCWSTR name)
+{
+    std::wstring_view view = name ? name : L"";
+    size_t slash = view.find_last_of(L"\\/");
+    std::wstring_view file = (slash == std::wstring_view::npos) ? view : view.substr(slash + 1);
+    return _wcsicmp(std::wstring{ file }.c_str(), L"client.dll") == 0;
 }
 
 using LoadLibraryExW_t = HMODULE(WINAPI *)(LPCWSTR, HANDLE, DWORD);
@@ -2113,6 +2177,78 @@ static void HookKernelBase(const char *name, void *hook, void **original)
     }
 }
 
+#else // Linux
+
+static bool IsClientDll(const char *name)
+{
+    std::string_view view = name ? name : "";
+    size_t slash = view.find_last_of("/\\");
+    std::string_view file = (slash == std::string_view::npos) ? view : view.substr(slash + 1);
+    return file == "client.dll" || file == "libclient.so" || file == "client.so";
+}
+
+static void *Hk_dlopen(const char *filename, int flags)
+{
+    void *result = Og_dlopen(filename, flags);
+    if (!result || (s_fileSystemHooked && s_mounts))
+    {
+        return result;
+    }
+
+    static std::mutex mutex;
+    std::lock_guard lock{ mutex };
+
+    if (!s_fileSystemHooked)
+    {
+        s_fileSystemHooked = HookFileSystem();
+    }
+
+    if (s_fileSystemHooked && !s_mounts && IsClientDll(filename))
+    {
+        MountMods(s_fileSystem, true, true, "client loaded");
+    }
+
+    return result;
+}
+
+static void HookDlopen()
+{
+    void *target = dlsym(RTLD_DEFAULT, "dlopen");
+    if (!target)
+    {
+        void *libdl = dlopen("libdl.so.2", RTLD_LAZY | RTLD_NOLOAD);
+        if (!libdl) libdl = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+        if (libdl) target = dlsym(libdl, "dlopen");
+    }
+    if (!target)
+    {
+        Platform::Print("CSForge: can't find dlopen\n");
+        return;
+    }
+
+    funchook_t *funchook = funchook_create();
+    if (!funchook)
+    {
+        Platform::Print("CSForge: can't create funchook for dlopen\n");
+        return;
+    }
+
+    void *temp = target;
+    if (funchook_prepare(funchook, &temp, reinterpret_cast<void *>(&Hk_dlopen)) != 0)
+    {
+        Platform::Print("CSForge: can't hook dlopen: {}\n", funchook_error_message(funchook));
+        funchook_destroy(funchook);
+        return;
+    }
+
+    Og_dlopen = reinterpret_cast<dlopen_t>(temp);
+    if (funchook_install(funchook, 0) != 0)
+    {
+        Platform::Print("CSForge: can't install dlopen hook: {}\n", funchook_error_message(funchook));
+        funchook_destroy(funchook);
+    }
+}
+
 #endif // _WIN32
 
 void Install()
@@ -2134,6 +2270,11 @@ void Install()
     // what notices client.dll, so it's needed either way
     s_fileSystemHooked = HookFileSystem();
     HookKernelBase("LoadLibraryExW", reinterpret_cast<void *>(&Hk_LoadLibraryExW), reinterpret_cast<void **>(&Og_LoadLibraryExW));
+#else
+    s_mountPath = Platform::DataPath("mods") + "/" + BuildFolder + "/" + VpkName + ".vpk";
+
+    s_fileSystemHooked = HookFileSystem();
+    HookDlopen();
 #endif
 }
 

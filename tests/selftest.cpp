@@ -26,7 +26,12 @@
 #include <proxy/steamgameserverproxy015.h>
 #include <filesystem>
 #include <set>
+#include <thread>
+#include <chrono>
+
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 static int s_failures;
 
@@ -97,6 +102,7 @@ namespace FakeGameServer
     }
 }
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t **argv)
 {
     if (argc < 3)
@@ -109,19 +115,23 @@ int wmain(int argc, wchar_t **argv)
     std::wstring dataDir = argv[2];
     std::wstring binDir = root + L"\\game\\bin\\win64";
     std::wstring gameDir = root + L"\\game\\csgo";
-    CreateDirectoryW(dataDir.c_str(), nullptr);
+    std::filesystem::create_directories(dataDir);
 
     Platform::SetPaths(binDir.c_str(), gameDir.c_str(), dataDir.c_str());
 
     // no price download from the mod build in a test: the upgrader tests give their own list
-    if (FILE *f = Platform::OpenFile(Platform::DataPath("config.txt"), "rb"))
-    {
-        fclose(f);
-    }
-    else if (FILE *w = Platform::OpenFile(Platform::DataPath("config.txt"), "wb"))
+    if (FILE *w = Platform::OpenFile(Platform::DataPath("config.txt"), "wb"))
     {
         fprintf(w, "\"upgrader_prices\"\t\"off\"\n");
         fclose(w);
+    }
+    for (const char *file : { "items_extra.txt", "price_sheet.txt" })
+    {
+        std::string p = Platform::DataPath(file);
+        if (!Platform::FileExists(p))
+        {
+            Platform::CopyTo(std::string{ CS2GC_SOURCE_DIR } + "/examples/" + file, p);
+        }
     }
     LoadConfig();
 
@@ -206,11 +216,134 @@ int wmain(int argc, wchar_t **argv)
         {
             InventoryChangeMessages changes;
             inventory.Update(changes);
-            Sleep(10);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
         return 0;
     }
+#else
+int main(int argc, char **argv)
+{
+    if (argc < 3)
+    {
+        printf("usage: cs2_gc_selftest <cs2 install dir> <data dir>\n");
+        return 2;
+    }
+
+    std::string root = argv[1];
+    std::string dataDir = argv[2];
+    std::string binDir = root + "/game/bin/linuxsteamrt64";
+    if (!std::filesystem::exists(binDir))
+    {
+        binDir = root + "/game/bin/win64";
+    }
+    std::string gameDir = root + "/game/csgo";
+    std::filesystem::create_directories(dataDir);
+
+    Platform::SetPaths(binDir.c_str(), gameDir.c_str(), dataDir.c_str());
+
+    // no price download from the mod build in a test: the upgrader tests give their own list
+    if (FILE *w = Platform::OpenFile(Platform::DataPath("config.txt"), "wb"))
+    {
+        fprintf(w, "\"upgrader_prices\"\t\"off\"\n");
+        fclose(w);
+    }
+    for (const char *file : { "items_extra.txt", "price_sheet.txt" })
+    {
+        std::string p = Platform::DataPath(file);
+        if (!Platform::FileExists(p))
+        {
+            Platform::CopyTo(std::string{ CS2GC_SOURCE_DIR } + "/examples/" + file, p);
+        }
+    }
+    LoadConfig();
+
+    // --prices <currency>: download the upgrader's price list into <data dir> (the network, so not
+    // part of the normal run) and say what came
+    if (argc >= 5 && !strcmp(argv[3], "--prices"))
+    {
+        std::string currency = argv[4];
+        SkinPrices::PriceList list;
+        bool loaded = SkinPrices::LoadPriceList(currency, 0, list);
+        printf("prices: %s, %s, %zu items, made %lld, AK-47 | Redline (Field-Tested) = %llu\n", loaded ? "loaded" : "none",
+            list.Currency().c_str(), list.Size(), static_cast<long long>(list.Time()),
+            static_cast<unsigned long long>(list.Find("AK-47 | Redline (Field-Tested)")));
+        return loaded ? 0 : 1;
+    }
+
+    // --case <def index> <openings>: what a case gives, with the mods built the way the game builds
+    // them (config "mods" "1"), to check a mod's case without the game
+    if (argc >= 6 && !strcmp(argv[3], "--case"))
+    {
+        if (GetConfig().m_mods)
+        {
+            ModLoader::Build();
+        }
+
+        ItemSchema schema;
+        CaseOpening caseOpening{ schema };
+        uint32_t def = static_cast<uint32_t>(std::strtoul(argv[4], nullptr, 10));
+        int openings = std::atoi(argv[5]);
+        ItemDefIndex defIndex = ToEnum<ItemDefIndex>(def);
+        ItemDesc crate{};
+        bool known = schema.GetItemDesc(defIndex, ItemOriginBaseItem, UnacknowledgedInvalid, crate);
+        printf("case %u: %s, %s\n", def, known ? "an item of the schema" : "NOT in the schema",
+            schema.GetCrateLootList(defIndex) ? "has a loot list" : "NO loot list");
+
+        std::map<std::array<uint32_t, 4>, int> counts; // def, paint, quality, rarity
+        int failed = 0;
+        for (int i = 0; i < openings; i++)
+        {
+            ItemDesc desc{};
+            if (!caseOpening.SelectItemFromCrate(defIndex, desc))
+            {
+                failed++;
+                continue;
+            }
+
+            uint32_t paint = 0;
+            for (const ItemAttribute &attribute : desc.attributes)
+            {
+                if (attribute.DefIndex() == AttributeDefIndex::TexturePrefab)
+                {
+                    paint = static_cast<uint32_t>(attribute.ValueAs<float>());
+                }
+            }
+            counts[{ FromEnum(desc.defIndex), paint, static_cast<uint32_t>(desc.quality), static_cast<uint32_t>(desc.rarity) }]++;
+        }
+
+        for (const auto &[key, count] : counts)
+        {
+            printf("  def %u paint %u quality %u rarity %u: %d (%.1f%%)\n", key[0], key[1], key[2], key[3], count, 100.0 * count / openings);
+        }
+        printf("%d openings, %d failed\n", openings, failed);
+        return (known && !failed && !counts.empty()) ? 0 : 1;
+    }
+
+    // --serve <seconds>: run only the inventory editor server (http + websocket on
+    // 127.0.0.1:13001) on top of <data dir>\inventory.txt, to test the editor page
+    if (argc >= 5 && !strcmp(argv[3], "--serve"))
+    {
+        int seconds = std::atoi(argv[4]);
+        if (GetConfig().m_mods)
+        {
+            ModLoader::Build(); // as the game does at its start, so the Mods tab has this "run" to show
+        }
+        Inventory inventory{ 76561197960287930ull };
+        printf("serving the inventory editor for %d s\n", seconds);
+        fflush(stdout);
+
+        auto end = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+        while (std::chrono::steady_clock::now() < end)
+        {
+            InventoryChangeMessages changes;
+            inventory.Update(changes);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        return 0;
+    }
+#endif
 
     printf("[vpk]\n");
     {
@@ -1249,7 +1382,7 @@ int wmain(int argc, wchar_t **argv)
             CHECK(removed.notification.request() == k_EGCItemCustomizationNotification_RemoveSticker
                     && !u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 3, 4))
                     && !u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerWear0, 3, 4))
-                    && u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 1, 4)) != 0,
+                    && u32(afterScrape[id(4)], slotAttribute(AttributeDefIndex::StickerId0, 2, 4)) != 0,
                 "scrape with 111: the sticker is gone (RemoveSticker), the others stay");
 
             // patches have no wear: remove_patch sends 0 and the patch goes

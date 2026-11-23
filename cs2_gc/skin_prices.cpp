@@ -2,10 +2,14 @@
 #include "skin_prices.h"
 #include <cmath>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
 #include <winhttp.h>
+#else
+#include <stdio.h>
+#endif
 
 namespace SkinPrices
 {
@@ -254,6 +258,7 @@ uint64_t PriceList::Find(const std::string &marketHashName) const
     return it != m_prices.end() ? it->second : 0;
 }
 
+#ifdef _WIN32
 static bool HttpGet(const wchar_t *host, const std::wstring &path, std::string &body, std::string &error)
 {
     body.clear();
@@ -320,6 +325,32 @@ static bool HttpGet(const wchar_t *host, const std::wstring &path, std::string &
     WinHttpCloseHandle(session);
     return ok;
 }
+#else
+static bool HttpGet(const char *host, const std::string &path, std::string &body, std::string &error)
+{
+    body.clear();
+    std::string url = std::string("https://") + host + path;
+    std::string cmd = "curl -sSL --max-time 15 \"" + url + "\"";
+    FILE *pipe = popen(cmd.c_str(), "r");
+    if (!pipe)
+    {
+        error = "popen failed";
+        return false;
+    }
+    char buffer[4096];
+    while (size_t bytes = fread(buffer, 1, sizeof(buffer), pipe))
+    {
+        body.append(buffer, bytes);
+    }
+    int code = pclose(pipe);
+    if (code != 0 || body.empty())
+    {
+        error = std::format("curl exit code {}", code);
+        return false;
+    }
+    return true;
+}
+#endif
 
 static bool ReadWholeFile(const std::string &path, std::string &text)
 {
@@ -352,10 +383,16 @@ bool LoadPriceList(std::string_view currency, int maxAgeHours, PriceList &out)
         return true;
     }
 
-    std::wstring request = L"/api/v2/prices/" + std::wstring(currency.begin(), currency.end()) + L".json";
     std::string body;
     PriceList fresh;
-    if (HttpGet(L"market.csgo.com", request, body, error) && fresh.Parse(body, error))
+#ifdef _WIN32
+    std::wstring request = L"/api/v2/prices/" + std::wstring(currency.begin(), currency.end()) + L".json";
+    bool fetchOk = HttpGet(L"market.csgo.com", request, body, error);
+#else
+    std::string request = "/api/v2/prices/" + std::string(currency) + ".json";
+    bool fetchOk = HttpGet("market.csgo.com", request, body, error);
+#endif
+    if (fetchOk && fresh.Parse(body, error))
     {
         FILE *f = Platform::OpenFile(path, "wb");
         if (f)

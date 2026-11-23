@@ -1,20 +1,34 @@
 project(launcher)
 
-# cs2_gc.exe: starts CS2 from its install folder with the GC hooks installed.
+# cs2_gc: starts CS2 from its install folder with the GC hooks installed.
 # It lives outside the game folder, nothing in the CS2 install is replaced.
-add_executable(cs2_gc_launcher WIN32 launcher_win.cpp launcher.manifest launcher.rc)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    add_executable(cs2_gc_launcher WIN32 launcher_win.cpp launcher.manifest launcher.rc)
+else()
+    add_executable(cs2_gc_launcher launcher_unix.cpp)
+endif()
 
-set_target_properties(cs2_gc_launcher PROPERTIES OUTPUT_NAME cs2_gc)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set_target_properties(cs2_gc_launcher PROPERTIES OUTPUT_NAME cs2_gc)
+else()
+    set_target_properties(cs2_gc_launcher PROPERTIES OUTPUT_NAME cs2_gc_launcher)
+endif()
 
 if (MSVC)
     # cs2.exe reserves a bigger main thread stack too
     target_link_options(cs2_gc_launcher PRIVATE /STACK:4194304)
+else()
+    target_link_options(cs2_gc_launcher PRIVATE -Wl,-export-dynamic)
 endif()
 
 target_compile_definitions(cs2_gc_launcher PRIVATE
     GC_LIB_DIR="${GC_LIB_DIR}")
 
-target_link_libraries(cs2_gc_launcher PRIVATE cs2_gc shlwapi)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_link_libraries(cs2_gc_launcher PRIVATE cs2_gc shlwapi)
+else()
+    target_link_libraries(cs2_gc_launcher PRIVATE cs2_gc dl pthread)
+endif()
 
 if (OUTDIR)
     add_custom_command(TARGET cs2_gc_launcher POST_BUILD

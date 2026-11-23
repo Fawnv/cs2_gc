@@ -1,10 +1,13 @@
 /build*/
-/release/
+/release*/
 /.vs/
 /.idea/
 /out/
 __pycache__/
 *.zip
+*.tar.gz
+*.tgz
+/dist/
 /musics/
 /_data/
 /*.png

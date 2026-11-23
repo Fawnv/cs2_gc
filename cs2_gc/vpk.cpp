@@ -1,6 +1,11 @@
 #include "stdafx.h"
 #include "vpk.h"
 
+#ifndef _WIN32
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+#endif
+
 constexpr uint32_t VpkSignature = 0x55aa1234;
 constexpr uint16_t VpkDirArchive = 0x7fff;
 constexpr uint16_t VpkEntryTerminator = 0xffff;

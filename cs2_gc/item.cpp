@@ -185,7 +185,7 @@ static void SetAttributeString(CSOEconItemAttribute *attribute, std::string_view
     else
     {
         CAttribute_String string;
-        string.set_value(value);
+        string.set_value(std::string{ value });
         string.SerializeToString(attribute->mutable_value_bytes());
     }
 }

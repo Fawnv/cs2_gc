@@ -4,11 +4,12 @@ namespace Platform
 {
 
 // where things are. Set by the launcher before Initialize().
-// gameBinDir: <cs2>\game\bin\win64 (engine2.dll, tier0.dll, steam_api64.dll)
+// gameBinDir: <cs2>\game\bin\win64 or <cs2>/game/bin/linuxsteamrt64
 // gameDir:    <cs2>\game\csgo (pak01_dir.vpk)
 // dataDir:    <launcher dir>\cs2_gc (config.txt, inventory.txt, gc_log.txt)
 // cs2_gc only reads from the game folders, every file it writes goes to dataDir.
 void SetPaths(const wchar_t *gameBinDir, const wchar_t *gameDir, const wchar_t *dataDir);
+void SetPaths(const char *gameBinDir, const char *gameDir, const char *dataDir);
 
 // absolute UTF-8 path to a file in dataDir / gameDir
 std::string DataPath(std::string_view name);
@@ -40,7 +41,10 @@ bool SteamClientPath(void *buffer, size_t bufferSize, bool dedicated = false);
 void *LoadDynamicLibrary(const void *pathBuffer);
 
 // load a library that ships with the game from gameBinDir
+void *LoadGameLibrary(const char *name);
+#ifdef _WIN32
 void *LoadGameLibrary(const wchar_t *name);
+#endif
 
 // GetProcAddress
 void *GetSymbol(void *handle, const char *symbol);

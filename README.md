@@ -20,18 +20,21 @@ In Valve games, the Game Coordinator (GC) is the backend service behind inventor
 - **CSForge mod loader:** custom skins, music kits, sounds, intro video and texts, or any game file replaced, without touching the game folder
 - **Upgrader:** an inventory tab where skins go in for a chance at a pricier one, with chances from real market prices
 - **Dedicated server** on Windows, no Steam client needed (experimental)
+- **Linux support:** native x64 build with GCC/Clang, `cs2_gc_launcher`, Steam Runtime compatibility
 
 > [!NOTE]
-> Most of this is checked in game. A few newer parts (terminals, StatTrak swaps, Sticker Slabs, tournament items, XP for matches, sound and intro mods, the upgrader's market prices) have so far only been checked by the offline self-test. Weekly missions and matchmaking are not implemented. Windows only.
+> Most of this is checked in game on Windows and fully verified on Linux via offline self-test. A few newer parts (terminals, StatTrak swaps, Sticker Slabs, tournament items, XP for matches, sound and intro mods, the upgrader's market prices) have so far only been checked by the offline self-test. Weekly missions and matchmaking are not implemented.
 
 ## Safety
 
 - The game always starts with `-insecure`. The launcher restarts itself with it if it's missing and refuses `-trusted`. A local server can't become secure either (`BSecureAllowed` returns false, the secure flag is stripped from `InitGameServer`).
 - Game files are never modified. cs2_gc only reads the game's DLLs and `pak01_dir.vpk`. Everything it writes (config, inventory, log, mods) stays in its own `cs2_gc\` data folder.
-- CS2 only starts when the launcher sits next to `cs2.exe`, so `run_cs2_gc.cmd` copies `cs2_gc.exe` into `game\bin\win64\` only while you play and removes it, along with any crash dumps, when the game exits. `cleanup_cs2_folder.cmd` does the same cleanup on demand and checks that nothing named `cs2_gc*` is left.
+- CS2 only starts when the launcher sits next to the game engine (`game\bin\win64\` on Windows or `game/bin/linuxsteamrt64/` on Linux). `run_cs2_gc.cmd` / `run_cs2_gc.sh` copy the launcher only while you play and remove it, along with any crash dumps, when the game exits. `cleanup_cs2_folder.cmd` / `cleanup_cs2_folder.sh` do the same cleanup on demand and check that nothing named `cs2_gc*` is left.
 - Launching CS2 from Steam as usual gives you the normal game with VAC. cs2_gc doesn't hook into it.
 
 ## Installation
+
+### Windows
 
 1. Requirements: Windows 10 or 11 (x64), Steam running, CS2 installed.
 2. Download the latest zip from the [releases page](../../releases/latest) and extract it anywhere outside the game folder.
@@ -40,6 +43,28 @@ In Valve games, the Game Coordinator (GC) is the backend service behind inventor
 5. If the window was closed early or the game crashed, run `cleanup_cs2_folder.cmd`.
 
 The log is in `release\cs2_gc\gc_log.txt` and in the game console (`[GC]` lines).
+
+### Linux
+
+1. Requirements: x86_64 Linux (Ubuntu 22.04+, Debian 12+, Fedora, Arch, SteamOS), Steam running, native CS2 installed.
+2. Install build dependencies:
+   ```bash
+   sudo apt update && sudo apt install -y build-essential cmake ninja-build \
+       libprotobuf-dev protobuf-compiler libmbedtls-dev libwebsockets-dev
+   ```
+3. Build:
+   ```bash
+   chmod +x build.sh run_cs2_gc.sh cleanup_cs2_folder.sh
+   ./build.sh
+   ```
+4. Run:
+   ```bash
+   ./run_cs2_gc.sh -novid -console
+   ```
+5. Offline self-test:
+   ```bash
+   ./build_linux/tests/cs2_gc_selftest "$HOME/.steam/steam/steamapps/common/Counter-Strike Global Offensive" /tmp/cs2_gc_test
+   ```
 
 ## Inventory editing
 
@@ -154,6 +179,8 @@ The window is the mod's JavaScript (`mods\upgrader\panorama\`), put into the inv
 
 ## Building
 
+### Windows
+
 Requires Visual Studio 2022 with the C++ workload, which includes CMake and vcpkg.
 
 ```bat
@@ -162,14 +189,44 @@ build.cmd
 
 The first build takes 20-30 minutes while vcpkg builds protobuf, mbedtls and libwebsockets. The result is in `release\`, and rebuilding never overwrites your `config.txt` and `inventory.txt`.
 
-`python tools\make_release_zip.py --exe release\cs2_gc.exe` packs a release zip for GitHub Releases: only `cs2_gc.exe` comes from the build, the rest from this tree (clean example `config.txt` and `inventory.txt`, the scripts, the editor page, the built-in upgrader mod, `README.txt`), in the `release\cs2_gc.exe` + `release\cs2_gc\...` layout the scripts expect. The zip goes to `dist\` as `cs2_gc-<date>-<commit>.zip` (`--out`, `--name` and `--source` change that).
+### Linux
+
+Supported on x86_64 distributions (Ubuntu 22.04+, Debian 12+, Fedora, Arch, SteamOS).
+
+Install dependencies (Ubuntu/Debian):
+```bash
+sudo apt update && sudo apt install -y build-essential cmake ninja-build \
+    libprotobuf-dev protobuf-compiler libmbedtls-dev libwebsockets-dev
+```
+
+Build:
+```bash
+chmod +x build.sh run_cs2_gc.sh cleanup_cs2_folder.sh
+./build.sh
+```
+
+Output is placed in `release_linux/` (`cs2_gc_launcher`, `cs2_gc/...`).
+
+### Packaging Releases
+
+- **Windows (.zip):** `python tools/make_release_zip.py --exe release/cs2_gc.exe`
+- **Linux (.tar.gz and .zip):** `./build.sh --package` (or `python3 tools/make_release_zip.py --bin release_linux/cs2_gc_launcher`)
+- **Both platforms:** `python tools/make_release_zip.py --all`
+
+Only the binaries come from the build. The scripts (`run_cs2_gc.sh` with `0755` executable permissions), clean example configuration and inventory, editor, and built-in mods are packaged into `dist/`.
 
 ### Offline self-test
 
-`cs2_gc_selftest.exe` runs without the game or Steam and checks reading the VPK and the item schema, opening every case, trade ups, rentals, the store, the editor protocol, CSForge builds, the upgrader and more. It only reads the game folder and writes only to the data folder you give it. Put `items_extra.txt` and `price_sheet.txt` from `examples\` into that folder first.
+Runs without the game or Steam and checks reading the VPK and the item schema, opening every case, trade ups, rentals, the store, the editor protocol, CSForge builds, the upgrader and more.
 
+**Windows:**
 ```bat
 build\tests\cs2_gc_selftest.exe "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" "%TEMP%\cs2_gc_test"
+```
+
+**Linux:**
+```bash
+./build_linux/tests/cs2_gc_selftest "$HOME/.steam/steam/steamapps/common/Counter-Strike Global Offensive" /tmp/cs2_gc_test
 ```
 
 `--serve <seconds>` runs only the editor's server on top of the data folder's `inventory.txt`, to try the page without the game. `--prices <currency>` downloads the upgrader's price list.
@@ -182,6 +239,7 @@ build\tests\cs2_gc_selftest.exe "C:\Program Files (x86)\Steam\steamapps\common\C
 
 ## How it works
 
+**Windows (`cs2_gc.exe`):**
 ```
 cs2_gc.exe (the launcher)
  ├─ restarts itself with -insecure if needed
@@ -196,19 +254,39 @@ cs2_gc.exe (the launcher)
  └─ Source2Main(hInst, 0, cmdline, nShow, "<game\bin\win64>", "csgo"), the way cs2.exe does it
 ```
 
+**Linux (`cs2_gc_launcher`):**
+```
+cs2_gc_launcher (native ELF x64 launcher)
+ ├─ exports BSecureAllowed, CountFilesCompletedTrustCheck, etc.
+ ├─ restarts itself with -insecure if needed
+ ├─ finds CS2 (libraryfolders.vdf / -cs2path / its own folder)
+ ├─ loads game/bin/linuxsteamrt64/libtier0.so and libengine2.so
+ ├─ installs the GC:
+ │   ├─ finds steamclient.so via dl_iterate_phdr or Steam paths
+ │   ├─ hooks steamclient.so!CreateInterface via funchook
+ │   │     ├─ SteamGameCoordinator001 → ClientGC / ServerGC
+ │   │     └─ SteamUser023 / SteamGameServer015 / SteamFriends017
+ │   └─ hooks SteamAPI_RegisterCallback / RunCallbacks
+ └─ Source2Main(argc, argv, "<game/bin/linuxsteamrt64>", "csgo")
+```
+
 The CS2 GC protobufs are dumped from the descriptors in `client.dll`, the Steam interface layouts from the flat API in `steam_api64.dll`, and `items_game.txt` is read from `pak01_dir.vpk` at runtime.
 
 ## Project layout
 
 ```
-cs2_gc/        the GC: client and server logic, inventory, item schema, Steam hooks, VPK, CSForge
-launcher/      cs2_gc.exe
+cs2_gc/        the GC: client and server logic, inventory, item schema, Steam hooks, VPK, CSForge (Windows & Linux platform layers)
+launcher/      cs2_gc.exe (Windows) / cs2_gc_launcher (Linux)
 protobufs/     CS2 GC protobufs (dumped from client.dll); csgo_original/ has csgo_gc's for comparison
 steamworks/    Steamworks headers and the generated interface proxies
-tests/         the offline self-test
+tests/         the offline self-test (cs2_gc_selftest.exe / cs2_gc_selftest)
 tools/         protobuf and interface dumpers, the editor catalogue generator, mod tools, packaging
 mods/upgrader/ the upgrader mod, installed into release\cs2_gc\mods by the build
 editor/        the web inventory editor (a fork of csgo_invedit) with the CS2 catalogue
+build.cmd, build.sh                Windows & Linux build scripts
+run_cs2_gc.cmd, run_cs2_gc.sh      Windows & Linux launcher scripts
+cleanup_cs2_folder.cmd, cleanup_cs2_folder.sh  Windows & Linux game folder cleanup scripts
+open_editor.cmd                    inventory editor shortcut
 examples/      config.txt, inventory.txt, items_extra.txt, price_sheet.txt, a demo mod
 reference/     the original csgo_gc README
 ```
@@ -252,15 +330,16 @@ Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation.
 - **Загрузчик модов CSForge:** кастомные скины, наборы музыки, звуки, вступительное видео, тексты и замена любых файлов игры без вмешательства в папку с CS2
 - **Апгрейдер:** вкладка в инвентаре, куда можно закинуть скины ради шанса выбить более дорогой, с шансами по реальным ценам с маркета
 - **Выделенный сервер** на Windows без клиента Steam (экспериментально)
+- **Поддержка Linux:** нативная сборка x64 (GCC/Clang), лаунчер `cs2_gc_launcher`, совместимость со Steam Runtime
 
 > [!NOTE]
-> Большая часть функций проверена прямо в игре. Несколько новых вещей (терминалы, перенос StatTrak, плашки для наклеек, турнирные предметы, опыт за матчи, моды на звуки и интро, цены апгрейдера с маркета) пока проверялись только офлайн-самотестом. Еженедельные миссии и подбор матчей не реализованы. Работает только на Windows.
+> Большая часть функций проверена прямо в игре на Windows и полностью подтверждена на Linux через офлайн-самотест. Несколько новых вещей (терминалы, перенос StatTrak, плашки для наклеек, турнирные предметы, опыт за матчи, моды на звуки и интро, цены апгрейдера с маркета) пока проверялись только офлайн-самотестом. Еженедельные миссии и подбор матчей не реализованы.
 
 ## Безопасность
 
 - Игра всегда запускается с `-insecure`. Лаунчер сам перезапустится с этим флагом, если его нет, и откажется принимать `-trusted`. Локальный сервер тоже не сможет стать защищённым (`BSecureAllowed` возвращает `false`, флаг защиты вырезается из `InitGameServer`).
 - Файлы игры не трогаются. cs2_gc только читает DLL игры и `pak01_dir.vpk`. Всё, что он записывает (конфиг, инвентарь, лог, моды), лежит в его собственной папке `cs2_gc\`.
-- CS2 запускается только если лаунчер лежит рядом с `cs2.exe`, поэтому `run_cs2_gc.cmd` копирует `cs2_gc.exe` в `game\bin\win64\` лишь на время игры, а после выхода удаляет его вместе с дампами крашей. `cleanup_cs2_folder.cmd` делает ту же очистку вручную и проверяет, чтобы не осталось ничего с именем `cs2_gc*`.
+- CS2 запускается только если лаунчер лежит рядом с движком игры (`game\bin\win64\` на Windows или `game/bin/linuxsteamrt64/` на Linux). `run_cs2_gc.cmd` / `run_cs2_gc.sh` копируют лаунчер лишь на время игры, а после выхода удаляют его вместе с дампами крашей. `cleanup_cs2_folder.cmd` / `cleanup_cs2_folder.sh` делают ту же очистку вручную и проверяют, чтобы не осталось ничего с именем `cs2_gc*`.
 - Обычный запуск CS2 из Steam открывает стандартную игру с VAC. cs2_gc в неё не вмешивается.
 
 ## Установка
@@ -387,6 +466,8 @@ python tools\make_bot_mod.py --cs2 "..." --data release\cs2_gc --difficulty expe
 
 ## Сборка
 
+### Windows
+
 Понадобится Visual Studio 2022 с компонентом разработки на C++, куда уже входят CMake и vcpkg.
 
 ```bat
@@ -395,14 +476,44 @@ build.cmd
 
 Первая сборка занимает 20-30 минут, пока vcpkg собирает protobuf, mbedtls и libwebsockets. Готовые файлы попадают в `release\`, а повторная сборка не перезаписывает ваши `config.txt` и `inventory.txt`.
 
-Команда `python tools\make_release_zip.py --exe release\cs2_gc.exe` собирает архив для GitHub Releases: из билда берётся только `cs2_gc.exe`, остальное подтягивается из репозитория (чистые примеры `config.txt` и `inventory.txt`, скрипты, страница редактора, встроенный мод апгрейдера, `README.txt`) в структуре `release\cs2_gc.exe` + `release\cs2_gc\...`, которую ждут скрипты. Архив сохраняется в `dist\` под именем `cs2_gc-<дата>-<коммит>.zip` (меняется флагами `--out`, `--name` и `--source`).
+### Linux
+
+Поддерживаются x86_64 дистрибутивы (Ubuntu 22.04+, Debian 12+, Fedora, Arch, SteamOS).
+
+Зависимости (Ubuntu/Debian):
+```bash
+sudo apt update && sudo apt install -y build-essential cmake ninja-build \
+    libprotobuf-dev protobuf-compiler libmbedtls-dev libwebsockets-dev
+```
+
+Сборка:
+```bash
+chmod +x build.sh run_cs2_gc.sh cleanup_cs2_folder.sh
+./build.sh
+```
+
+Готовые файлы попадают в `release_linux/` (`cs2_gc_launcher`, `cs2_gc/...`).
+
+### Сборка релизных архивов
+
+- **Windows (.zip):** `python tools\make_release_zip.py --exe release\cs2_gc.exe`
+- **Linux (.tar.gz и .zip):** `./build.sh --package` (или `python3 tools/make_release_zip.py --bin release_linux/cs2_gc_launcher`)
+- **Обе платформы:** `python tools\make_release_zip.py --all`
+
+Из сборки берутся только скомпилированные бинарники (`cs2_gc.exe` / `cs2_gc_launcher`), всё остальное подтягивается из репозитория (чистые примеры `config.txt` и `inventory.txt`, скрипты запуска с правами исполняемости `0755` для Linux, страница редактора, встроенный мод апгрейдера, `README.txt`). Архивы сохраняются в `dist\` под именем `cs2_gc-<дата>-<коммит>.zip` (Windows) и `cs2_gc-<дата>-<коммит>-linux-x64.tar.gz` / `.zip` (Linux).
 
 ### Офлайн-самотест
 
-`cs2_gc_selftest.exe` запускается без игры и Steam и проверяет чтение VPK и схемы предметов, открытие каждого кейса, контракты, аренду, магазин, протокол редактора, сборку CSForge, апгрейдер и остальное. Папку игры он только читает, а пишет исключительно в указанную папку данных. Предварительно скопируйте туда `items_extra.txt` и `price_sheet.txt` из `examples\`.
+`cs2_gc_selftest` запускается без игры и Steam и проверяет чтение VPK и схемы предметов, открытие каждого кейса, контракты, аренду, магазин, протокол редактора, сборку CSForge, апгрейдер и остальное. Папку игры он только читает, а пишет исключительно в указанную папку данных.
 
+**Windows:**
 ```bat
 build\tests\cs2_gc_selftest.exe "C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive" "%TEMP%\cs2_gc_test"
+```
+
+**Linux:**
+```bash
+./build_linux/tests/cs2_gc_selftest "$HOME/.steam/steam/steamapps/common/Counter-Strike Global Offensive" /tmp/cs2_gc_test
 ```
 
 Флаг `--serve <seconds>` поднимает только сервер редактора поверх `inventory.txt` из папки данных, чтобы потестировать страницу без запуска игры. Флаг `--prices <currency>` скачивает прайс-лист для апгрейдера.
@@ -415,6 +526,7 @@ build\tests\cs2_gc_selftest.exe "C:\Program Files (x86)\Steam\steamapps\common\C
 
 ## Как это работает
 
+**Windows (`cs2_gc.exe`):**
 ```
 cs2_gc.exe (лаунчер)
  ├─ при необходимости перезапускает себя с -insecure
@@ -429,19 +541,34 @@ cs2_gc.exe (лаунчер)
  └─ вызывает Source2Main(hInst, 0, cmdline, nShow, "<game\bin\win64>", "csgo"), как это делает cs2.exe
 ```
 
+**Linux (`cs2_gc_launcher`):**
+```
+cs2_gc_launcher (нативный ELF x64 лаунчер)
+ ├─ экспортирует BSecureAllowed, CountFilesCompletedTrustCheck и др.
+ ├─ при необходимости перезапускает себя с -insecure
+ ├─ находит CS2 (libraryfolders.vdf / -cs2path / собственная папка)
+ ├─ загружает game/bin/linuxsteamrt64/libtier0.so и libengine2.so
+ ├─ устанавливает GC (dl_iterate_phdr / funchook для steamclient.so)
+ └─ вызывает Source2Main(argc, argv, "<game/bin/linuxsteamrt64>", "csgo")
+```
+
 Protobuf-описания GC для CS2 выгружаются из дескрипторов в `client.dll`, структуры интерфейсов Steam берутся из плоского API в `steam_api64.dll`, а `items_game.txt` читается напрямую из `pak01_dir.vpk` во время работы.
 
 ## Структура проекта
 
 ```
-cs2_gc/        сам GC: клиентская и серверная логика, инвентарь, схема предметов, хуки Steam, VPK, CSForge
-launcher/      cs2_gc.exe
+cs2_gc/        сам GC: клиентская и серверная логика, инвентарь, схема предметов, хуки Steam, VPK, CSForge (платформы Windows и Linux)
+launcher/      лаунчер cs2_gc.exe (Windows) / cs2_gc_launcher (Linux)
 protobufs/     protobuf-файлы GC для CS2 (выгружены из client.dll); в csgo_original/ лежат файлы csgo_gc для сравнения
 steamworks/    заголовки Steamworks и сгенерированные прокси интерфейсов
-tests/         офлайн-самотест
+tests/         офлайн-самотест (cs2_gc_selftest.exe / cs2_gc_selftest)
 tools/         дамперы protobuf и интерфейсов, генератор каталога редактора, инструменты для модов, упаковка релизов
 mods/upgrader/ мод апгрейдера, копируется в release\cs2_gc\mods при сборке
 editor/        веб-редактор инвентаря (форк csgo_invedit) с каталогом CS2
+build.cmd, build.sh                скрипты сборки под Windows и Linux
+run_cs2_gc.cmd, run_cs2_gc.sh      скрипты запуска под Windows и Linux
+cleanup_cs2_folder.cmd, cleanup_cs2_folder.sh  скрипты очистки папки CS2 под Windows и Linux
+open_editor.cmd                    ярлык открытия редактора инвентаря
 examples/      config.txt, inventory.txt, items_extra.txt, price_sheet.txt, демо-мод
 reference/     оригинальный README от csgo_gc
 ```

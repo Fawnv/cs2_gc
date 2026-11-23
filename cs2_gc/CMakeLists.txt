@@ -1,8 +1,15 @@
 project(cs2_gc)
 
-find_package(MbedTLS CONFIG REQUIRED)
-find_package(Protobuf CONFIG REQUIRED)
-find_package(libwebsockets CONFIG REQUIRED)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    find_package(MbedTLS CONFIG REQUIRED)
+    find_package(Protobuf CONFIG REQUIRED)
+    find_package(libwebsockets CONFIG REQUIRED)
+else()
+    list(APPEND CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/cmake" "/usr/lib64/cmake" "/usr/lib/cmake")
+    find_package(MbedTLS REQUIRED)
+    find_package(Protobuf REQUIRED)
+    find_package(libwebsockets REQUIRED)
+endif()
 
 # funchook and its deps get pulled in via FetchContent
 # FIXME: consider alternatives!!! funchook is no longer
@@ -58,7 +65,11 @@ add_library(cs2_gc STATIC
     vpk.cpp
     mod_loader.cpp)
 
-target_sources(cs2_gc PRIVATE platform_windows.cpp)
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_sources(cs2_gc PRIVATE platform_windows.cpp)
+else()
+    target_sources(cs2_gc PRIVATE platform_unix.cpp)
+endif()
 
 target_precompile_headers(cs2_gc PRIVATE stdafx.h)
 
@@ -89,13 +100,21 @@ protobuf_generate(
 
 source_group("Protobufs" REGULAR_EXPRESSION "\\.pb\\.(cc|h)$")
 
-target_link_libraries(cs2_gc PRIVATE
-    MbedTLS::mbedcrypto
-    protobuf::libprotobuf-lite
-    funchook-static
-    steam_api
-    websockets
-    winhttp)
-
-
-
+if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_link_libraries(cs2_gc PRIVATE
+        MbedTLS::mbedcrypto
+        protobuf::libprotobuf-lite
+        funchook-static
+        steam_api
+        websockets
+        winhttp)
+else()
+    target_link_libraries(cs2_gc PRIVATE
+        MbedTLS::mbedcrypto
+        protobuf::libprotobuf-lite
+        funchook-static
+        steam_api
+        websockets
+        dl
+        pthread)
+endif()
