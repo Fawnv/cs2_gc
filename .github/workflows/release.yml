@@ -35,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake ninja-build \
-            libprotobuf-dev protobuf-compiler libmbedtls-dev libwebsockets-dev
+            libprotobuf-dev protobuf-compiler libmbedtls-dev libwebsockets-dev pkg-config
 
       - name: Build and Package Linux
         run: |

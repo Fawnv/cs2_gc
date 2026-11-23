@@ -8,6 +8,7 @@
 #include <mbedtls/md.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
+#include <mbedtls/version.h>
 
 namespace Graffiti
 {
@@ -102,7 +103,11 @@ void Initialize()
         return;
     }
 
+#if defined(MBEDTLS_VERSION_MAJOR) && MBEDTLS_VERSION_MAJOR >= 3
     if (mbedtls_pk_parse_key(&s_privateKey, PrivateKeyGC, sizeof(PrivateKeyGC), nullptr, 0, mbedtls_ctr_drbg_random, &s_ctrDrbg) != 0)
+#else
+    if (mbedtls_pk_parse_key(&s_privateKey, PrivateKeyGC, sizeof(PrivateKeyGC), nullptr, 0) != 0)
+#endif
     {
         assert(false);
         return;
@@ -195,7 +200,11 @@ bool SignMessage(PlayerDecalDigitalSignature &message)
 
     uint8_t signature[128];
     size_t signatureLength;
+#if defined(MBEDTLS_VERSION_MAJOR) && MBEDTLS_VERSION_MAJOR >= 3
     if (mbedtls_pk_sign(&s_privateKey, MBEDTLS_MD_SHA1, hash, sizeof(hash), signature, sizeof(signature), &signatureLength, mbedtls_ctr_drbg_random, &s_ctrDrbg) != 0)
+#else
+    if (mbedtls_pk_sign(&s_privateKey, MBEDTLS_MD_SHA1, hash, sizeof(hash), signature, &signatureLength, mbedtls_ctr_drbg_random, &s_ctrDrbg) != 0)
+#endif
     {
         return false;
     }
