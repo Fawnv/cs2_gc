@@ -10,7 +10,7 @@ endif()
 
 find_path(MBEDTLS_INCLUDE_DIR
     NAMES mbedtls/version.h mbedtls/ssl.h mbedtls/pk.h
-    PATHS /usr/include /usr/local/include
+    PATHS /usr/include /usr/include/mbedtls3 /usr/local/include
 )
 
 find_library(MBEDCRYPTO_LIBRARY
