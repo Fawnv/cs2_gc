@@ -60,8 +60,23 @@ ulimit -Ss 2048 2>/dev/null || true
 export ENABLE_PATHMATCH=1
 export LD_LIBRARY_PATH="$CS2_BIN:${LD_LIBRARY_PATH}"
 
-# Run launcher
-"$CS2_BIN/$LAUNCHER_BIN" -insecure -gcdata "$GC_DATA" "$@" || true
+# Preload system libfreetype to avoid libharfbuzz/libfreetype symbol conflicts on modern distros
+FREETYPE_LIB=""
+for candidate in \
+    /usr/lib/libfreetype.so.6 \
+    /usr/lib/x86_64-linux-gnu/libfreetype.so.6 \
+    /usr/lib64/libfreetype.so.6; do
+    if [ -f "$candidate" ]; then
+        FREETYPE_LIB="$candidate"
+        break
+    fi
+done
+
+if [ -n "$FREETYPE_LIB" ]; then
+    LD_PRELOAD="${FREETYPE_LIB}${LD_PRELOAD:+:$LD_PRELOAD}" "$CS2_BIN/$LAUNCHER_BIN" -insecure -gcdata "$GC_DATA" "$@" || true
+else
+    "$CS2_BIN/$LAUNCHER_BIN" -insecure -gcdata "$GC_DATA" "$@" || true
+fi
 
 # Cleanup
 "$SCRIPT_DIR/cleanup_cs2_folder.sh" --quiet

@@ -1,5 +1,8 @@
 project(cs2_gc)
 
+include(FetchContent)
+set(FETCHCONTENT_QUIET FALSE)
+
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
     find_package(MbedTLS CONFIG REQUIRED)
     find_package(Protobuf CONFIG REQUIRED)
@@ -7,7 +10,24 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 else()
     list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
     list(APPEND CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/cmake" "/usr/lib64/cmake" "/usr/lib/cmake")
-    find_package(MbedTLS REQUIRED)
+
+    # Fetch and statically link MbedTLS 3.6 LTS to avoid system version conflicts (e.g. MbedTLS 4.x on Arch)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+    set(MBEDTLS_FATAL_WARNINGS OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(mbedtls
+        GIT_REPOSITORY https://github.com/Mbed-TLS/mbedtls.git
+        GIT_TAG v3.6.2
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(mbedtls)
+
+    if (NOT TARGET MbedTLS::mbedcrypto)
+        add_library(MbedTLS::mbedcrypto ALIAS mbedcrypto)
+    endif()
+
     find_package(Protobuf REQUIRED)
     find_package(libwebsockets QUIET)
     if (NOT TARGET websockets AND NOT TARGET websockets_shared)
@@ -34,9 +54,6 @@ endif()
 # FIXME: consider alternatives!!! funchook is no longer
 # maintained, and our hooks won't work reliably on x86_64
 # macOS when using it
-include(FetchContent)
-set(FETCHCONTENT_QUIET FALSE)
-
 option(FUNCHOOK_BUILD_SHARED "build shared library" OFF)
 option(FUNCHOOK_BUILD_TESTS "Build tests" OFF)
 option(FUNCHOOK_INSTALL "Install Funchook" OFF)
