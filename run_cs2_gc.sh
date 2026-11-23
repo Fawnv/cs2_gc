@@ -54,6 +54,10 @@ chmod +x "$CS2_BIN/$LAUNCHER_BIN"
 echo "CS2 with cs2_gc is running. Inventory editor: http://127.0.0.1:13001/"
 echo "Do not close this window: cs2_gc files are removed from the CS2 folder when the game exits."
 
+# Environment settings matching Valve's cs2.sh
+ulimit -n 65535 2>/dev/null || true
+ulimit -Ss 2048 2>/dev/null || true
+export ENABLE_PATHMATCH=1
 export LD_LIBRARY_PATH="$CS2_BIN:${LD_LIBRARY_PATH}"
 
 # Run launcher

@@ -50,7 +50,7 @@ DLL_EXPORT int GetTotalFilesLoaded()
 using Plat_LoadModule_t = void *(*)(const char *name, int *error, void *reserved);
 using Plat_GetModuleProcAddress_t = void *(*)(void *module, const char *name);
 
-using Source2Main_t = int (*)(int argc, char **argv, const char *baseDir, const char *game);
+using Source2Main_t = int (*)(void *hInstance, void *hPrevInstance, const char *lpCmdLine, int nShowCmd, const char *baseDir, const char *game);
 
 static void ErrorMessageBox(const char *format, ...)
 {
@@ -66,7 +66,7 @@ static void ErrorMessageBox(const char *format, ...)
     // Try desktop notification if DISPLAY is set
     if (getenv("DISPLAY") || getenv("WAYLAND_DISPLAY"))
     {
-        char cmd[8192];
+        char cmd[16384];
         snprintf(cmd, sizeof(cmd), "zenity --error --text='%s' 2>/dev/null || kdialog --error '%s' 2>/dev/null", message, message);
         int res = system(cmd);
         (void)res;
@@ -228,6 +228,31 @@ static std::string FindCS2Root(const std::string &exeDir, int argc, char **argv)
     return {};
 }
 
+static std::string BuildCommandLine(int argc, char **argv)
+{
+    std::string line;
+    for (int i = 0; i < argc; i++)
+    {
+        if (i > 0)
+        {
+            line.push_back(' ');
+        }
+        std::string_view arg = argv[i] ? argv[i] : "";
+        bool alreadyQuoted = (arg.size() >= 2 && arg.front() == '"' && arg.back() == '"');
+        bool needsQuotes = !alreadyQuoted && (arg.empty() || arg.find(' ') != std::string_view::npos || arg.find('\t') != std::string_view::npos);
+        if (needsQuotes)
+        {
+            line.push_back('"');
+        }
+        line.append(arg);
+        if (needsQuotes)
+        {
+            line.push_back('"');
+        }
+    }
+    return line;
+}
+
 int main(int argc, char **argv)
 {
     std::string exePath = GetExecutablePath();
@@ -341,5 +366,8 @@ int main(int argc, char **argv)
     params.dedicated = dedicated;
     InstallGC(params);
 
-    return reinterpret_cast<Source2Main_t>(source2Main)(argc, argv, binDir.c_str(), "csgo");
+    std::string cmdLine = BuildCommandLine(argc, argv);
+    auto source2MainFunc = reinterpret_cast<Source2Main_t>(source2Main);
+    source2MainFunc(reinterpret_cast<void *>(1), nullptr, cmdLine.c_str(), 0, binDir.c_str(), "csgo");
+    return 0;
 }

@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <link.h>
+#include <elf.h>
 #include <cwchar>
 #include <filesystem>
 #include <fstream>
@@ -192,8 +193,20 @@ static bool GetModuleInfo(std::string_view moduleName, ModuleInfo &info)
         if (phdrInfo->dlpi_name && strstr(phdrInfo->dlpi_name, moduleInfo->fullPath.c_str()))
         {
             moduleInfo->fullPath.assign(phdrInfo->dlpi_name);
-            moduleInfo->baseAddress = reinterpret_cast<void *>(phdrInfo->dlpi_addr + phdrInfo->dlpi_phdr[0].p_vaddr);
-            moduleInfo->size = phdrInfo->dlpi_phdr[0].p_memsz;
+            moduleInfo->baseAddress = reinterpret_cast<void *>(phdrInfo->dlpi_addr);
+            size_t maxVaddr = 0;
+            for (int i = 0; i < phdrInfo->dlpi_phnum; i++)
+            {
+                if (phdrInfo->dlpi_phdr[i].p_type == PT_LOAD)
+                {
+                    size_t endVaddr = phdrInfo->dlpi_phdr[i].p_vaddr + phdrInfo->dlpi_phdr[i].p_memsz;
+                    if (endVaddr > maxVaddr)
+                    {
+                        maxVaddr = endVaddr;
+                    }
+                }
+            }
+            moduleInfo->size = maxVaddr;
             return 1;
         }
         return 0;
