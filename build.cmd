@@ -14,6 +14,12 @@ call "%VSDIR%\VC\Auxiliary\Build\vcvars64.bat" >nul || exit /b 1
 
 if not defined VCPKG_ROOT set "VCPKG_ROOT=%VSDIR%\VC\vcpkg"
 
+set "VCPKG_DIR=%~dp0build\vcpkg_installed"
+if exist "%~dp0..\build\vcpkg_installed\" (
+    for %%I in ("%~dp0..\build\vcpkg_installed") do set "VCPKG_DIR=%%~fI"
+)
+if defined VCPKG_INSTALLED_DIR set "VCPKG_DIR=%VCPKG_INSTALLED_DIR%"
+
 set "BUILD_TYPE=%~1"
 if "%BUILD_TYPE%"=="" set "BUILD_TYPE=Release"
 
@@ -21,6 +27,7 @@ cmake -S "%~dp0." -B "%~dp0build" -G Ninja ^
     -DCMAKE_BUILD_TYPE=%BUILD_TYPE% ^
     -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" ^
     -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
+    -DVCPKG_INSTALLED_DIR="%VCPKG_DIR%" ^
     -DOUTDIR="%~dp0release" || exit /b 1
 
 cmake --build "%~dp0build" --config %BUILD_TYPE% || exit /b 1
